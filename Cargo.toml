@@ -1,0 +1,27 @@
+[package]
+name = "davi"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "*"
+js-sys = "*"
+thiserror = "1"
+
+[dependencies.web-sys]
+version = "*"
+features = [
+  'CanvasRenderingContext2d',
+  'Document',
+  'Element',
+  'HtmlCanvasElement',
+  'HtmlElement',
+  'ImageData',
+  'Node',
+  'Window',
+]
