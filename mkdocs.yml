@@ -1,0 +1,41 @@
+site_name: graphima
+theme:
+  name: material
+        # highlightjs: true
+        # hljs_languages:
+        #     - python
+  palette:
+    primary: black
+  features:
+    - content.code.copy
+hooks:
+  - docs/own_hooks.py
+
+repo_name: westandskif/graphima
+repo_url: https://github.com/westandskif/graphima
+
+nav:
+  - Main chart:
+     - Intro: README.md
+     - Reference: main/reference.md
+     - More examples: main/more-examples.md
+       # - Themes: main/themes.md
+     - Coming soon: main/coming-soon.md
+  - Changelog: CHANGELOG.md
+  - License: LICENSE.md
+  - Sponsor this project: sponsor-project.md
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - tables
+  - markdown_include.include:
+      base_path: docs
+  - pymdownx.tabbed:
+      alternate_style: true 
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.snippets

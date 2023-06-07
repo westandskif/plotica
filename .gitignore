@@ -1,4 +1,9 @@
-/target
-/Cargo.lock
+target
+Cargo.lock
 tags
 .s.vim
+docs/dist
+__pycache__
+node_modules
+en.utf-8.*
+.notes
