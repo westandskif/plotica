@@ -1,5 +1,7 @@
 site_name: graphima
 theme:
+  logo: images/logo-white.png
+  favicon: images/favicon.png
   name: material
         # highlightjs: true
         # hljs_languages:
@@ -39,3 +41,5 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.snippets
+  - attr_list
+  - md_in_html

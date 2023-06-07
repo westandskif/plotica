@@ -1,7 +1,15 @@
 # Main chart
 
-**Graphima** (_Greek: γράφημα_) is an attempt to build full-featured
-WebAssembly-based monolith charts.
+<figure markdown>
+
+![Image title](images/logo-black.png){ align=left width=128}
+
+<p style="text-align: left">
+<strong>Graphima</strong> (<i>Greek: γράφημα</i>) is an attempt to build
+full-featured WebAssembly-based monolith charts.
+</p>
+
+</figure>
 
 ## Tutorial
 
