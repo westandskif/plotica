@@ -1,4 +1,4 @@
-## v0.1 (2023-06-06)
+## v0.1.3 (2023-06-07)
 
 - lines mode
 - smart tooltip (click to freeze; highlights the closest series)

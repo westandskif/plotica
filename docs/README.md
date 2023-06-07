@@ -26,22 +26,27 @@ WebAssembly-based monolith charts.
 - mobile friendly (_+supports pinch gesture_)
 - tolerant to too many series (paginated legend + tooltip with max size)
 
-## Imports
+## Installation
 
-As `iife` module (making it available as `window.Graphima` - _Immediate Invoked
-Function Expression_):
+#### As IIFE module
+
+`iife` module (_Immediate Invoked Function Expression_) makes it available as
+`window.Graphima`.
 
 ```js title="in index.html above your app code"
 --8<-- "docs/import-iife.html"
 ```
 
-or as `ES` module, using bundler of your choice:
+#### As ESM module
+
+Run `npm i graphima` and then use a bundler of your choice (e.g.
+[Rollup](https://rollupjs.org)):
 
 ```js
 --8<-- "docs/import-es.js"
 ```
 
-## Code
+## Code of the chart above
 
 ```js
 --8<-- "docs/readme.js"
