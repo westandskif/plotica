@@ -3,7 +3,11 @@
 **Graphima** (_Greek: γράφημα_) is an attempt to build full-featured
 WebAssembly-based monolith charts.
 
+See ["Can I Use" WebAssembly](https://caniuse.com/wasm) for browser support.
+
 ## Docs & Examples - [graphima.readthedocs.io](https://graphima.readthedocs.io/en/latest/)
+
+[graphima on npmjs.com](https://www.npmjs.com/package/graphima)
 
 ## Main chart features
 

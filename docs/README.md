@@ -7,6 +7,9 @@
 <p style="text-align: left">
 <strong>Graphima</strong> (<i>Greek: γράφημα</i>) is an attempt to build
 full-featured WebAssembly-based monolith charts.
+<br/>
+See <a href="https://caniuse.com/wasm">"Can I Use" WebAssembly</a> for browser
+support.
 </p>
 
 </figure>
@@ -35,6 +38,8 @@ full-featured WebAssembly-based monolith charts.
 - tolerant to too many series (paginated legend + tooltip with max size)
 
 ## Installation
+
+[graphima on npmjs.com](https://www.npmjs.com/package/graphima)
 
 #### As IIFE module
 
