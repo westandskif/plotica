@@ -1,3 +1,7 @@
+## v0.1.4 (2024-04-29)
+
+- internals rewrite
+
 ## v0.1.3 (2023-06-07)
 
 - lines mode

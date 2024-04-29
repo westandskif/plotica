@@ -9,52 +9,67 @@ use crate::animate::AnimatedNumber;
 use crate::data_set::{DataPoint, DataSet};
 use crate::params::{ChartConfig, Content};
 use crate::scale::Scale;
-use crate::screen::{Screen, ScreenArea};
+use crate::screen::{CoordSpaceHandle, ScreenPos, Size};
 use crate::utils::place_rect_inside;
+use std::cell::RefCell;
 use std::f64::consts::PI;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
+const LINE_WIDTH: Size = Size::Px(1.0);
+const PADDING: Size = Size::Px(5.0);
+const ADDITIONAL_GAP_AFTER_HEADING: Size = Size::Px(10.0);
+const GAP_BETWEEN_LINES: Size = Size::Px(2.0);
+const GAP_BETWEEN_COLORS_N_NAMES: Size = Size::Px(5.0);
+const GAP_BETWEEN_NAMES_N_VALUES: Size = Size::Px(5.0);
+const EXPECTED_SHIFT_X: Size = Size::Px(25.0);
+
 pub struct Tooltip {
-    pub chart_config: Rc<ChartConfig>,
+    pub chart_config: Rc<RefCell<ChartConfig>>,
     min_width: AnimatedNumber,
     pub visible: bool,
-    pub mouse_click_at: Option<(f64, f64)>,
 }
 
 impl Tooltip {
-    pub fn new(chart_config: Rc<ChartConfig>) -> Self {
+    pub fn new(chart_config: Rc<RefCell<ChartConfig>>) -> Self {
         Self {
             chart_config,
             min_width: AnimatedNumber::custom(0.0, 500000.0, 500000.0),
             visible: false,
-            mouse_click_at: None,
         }
     }
 
-    pub fn draw<'a, T>(
-        &'a mut self,
+    pub fn draw<T>(
+        &mut self,
         content: &mut Content,
-        screen: &mut Screen,
-        screen_area: &ScreenArea<T>,
-        mut mouse_position: &'a Option<(f64, f64)>,
+        coord_space_handle: CoordSpaceHandle<T>,
+        pointer: Option<&ScreenPos>,
+        global_scale: &T,
         time_us: f64,
     ) where
         T: Scale,
     {
-        if self.mouse_click_at.is_some() {
-            mouse_position = &self.mouse_click_at;
-        }
-        let data = match mouse_position {
-            Some((x, y)) => match (screen_area.x_to_coord(*x), screen_area.y_to_value(*y)) {
-                (Some(coord_), Some(value_)) => Some((
-                    coord_,
-                    value_,
-                    screen_area.x_to_cx(*x),
-                    screen_area.y_to_cy(*y),
-                )),
-                _ => None,
-            },
+        let pointer = match pointer {
+            Some(pointer) => pointer,
+            None => {
+                self.visible = false;
+                return;
+            }
+        };
+        let conf = self.chart_config.borrow();
+        let screen_area_handle = coord_space_handle.screen_area_handle.as_ref();
+        let crc = screen_area_handle.crc.as_ref();
+
+        let data = match (
+            coord_space_handle.get_coord(pointer),
+            coord_space_handle.get_value(pointer),
+        ) {
+            (Some(coord_), Some(value_)) => Some((
+                coord_,
+                value_,
+                screen_area_handle.get_cx(pointer),
+                screen_area_handle.get_cy(pointer),
+            )),
             _ => None,
         };
 
@@ -103,7 +118,8 @@ impl Tooltip {
         }
         right_matches.retain(|m| m.1.coord == min_coord);
 
-        let cx_step_size = screen_area.get_cx(min_coord) - screen_area.get_cx(max_coord);
+        let cx_step_size =
+            coord_space_handle.get_cx(min_coord) - coord_space_handle.get_cx(max_coord);
         let matched_coord: f64;
         let mut matches = if (coord - min_coord).abs() < (coord - max_coord).abs() {
             matched_coord = min_coord;
@@ -122,7 +138,6 @@ impl Tooltip {
                 index_with_min_diff_by_value = index;
             }
         }
-        drop(min_diff);
 
         let coord_format = &content.coord_verbose_format;
         let value_format = &content.value_verbose_format;
@@ -131,8 +146,8 @@ impl Tooltip {
             .format_values(
                 Some(matched_coord).into_iter(),
                 |x| x,
-                screen_area.global_scale.get_coord_min(),
-                screen_area.global_scale.get_coord_max(),
+                global_scale.get_coord_min(),
+                global_scale.get_coord_max(),
             )
             .into_iter()
             .next()
@@ -147,25 +162,30 @@ impl Tooltip {
         let formatted_values = value_format.format_values(
             matches.iter().cloned(),
             |t| t.1.value,
-            screen_area.global_scale.get_value_min(),
-            screen_area.global_scale.get_value_max(),
+            global_scale.get_value_min(),
+            global_scale.get_value_max(),
         );
         let max_formatted_value_length: usize =
             formatted_values.iter().map(|v| v.len()).max().unwrap();
 
-        let context = &screen.context;
+        let c_line_width = LINE_WIDTH.to_cpx_height(screen_area_handle);
+        let c_padding = PADDING.to_cpx_height(screen_area_handle);
+        let c_additional_gap_after_heading =
+            ADDITIONAL_GAP_AFTER_HEADING.to_cpx_height(screen_area_handle);
+        let c_gap_between_lines = GAP_BETWEEN_LINES.to_cpx_height(screen_area_handle);
+        let c_gap_between_colors_n_names =
+            GAP_BETWEEN_COLORS_N_NAMES.to_cpx_height(screen_area_handle);
+        let c_gap_between_names_n_values =
+            GAP_BETWEEN_NAMES_N_VALUES.to_cpx_height(screen_area_handle);
 
-        let c_line_width = screen.apx_to_cpx(1.0);
-        let c_padding: f64 = screen.apx_to_cpx(5.0);
-        let c_additional_gap_after_heading: f64 = screen.apx_to_cpx(10.0);
-        let c_gap_between_lines: f64 = screen.apx_to_cpx(2.0);
-        let c_gap_between_colors_n_names: f64 = screen.apx_to_cpx(5.0);
-        let c_gap_between_names_n_values: f64 = screen.apx_to_cpx(5.0);
         let c_heading_lines: usize = 1;
-        let c_font_size: f64 = screen.apx_to_cpx(self.chart_config.font_size_normal);
-        let c_color_size: f64 = c_font_size;
-        let c_expected_tooltip_shift_x: f64 = screen.apx_to_cpx(25.0).max(cx_step_size * 0.125);
-        let c_font_width = c_font_size * self.chart_config.font_width_coeff;
+        let c_font_size = conf.font_size_normal.to_cpx_height(screen_area_handle);
+        let c_font_width = conf.font_size_normal.to_cpx_width(screen_area_handle);
+        let c_color_size = c_font_size;
+
+        let c_expected_tooltip_shift_x = EXPECTED_SHIFT_X
+            .to_cpx_height(screen_area_handle)
+            .max(cx_step_size * 0.125);
         let c_heading_width = content.coord_short_verbose_len as f64 * c_font_width;
 
         let mut tooltip_width = c_heading_width.max(
@@ -189,16 +209,16 @@ impl Tooltip {
             + (formatted_values.len() + c_heading_lines - 1) as f64 * c_gap_between_lines
             + c_additional_gap_after_heading
             + c_padding * 2.0;
-        let tooltip_height = tooltip_height.min(screen_area.get_content_cheight());
+        let tooltip_height = tooltip_height.min(screen_area_handle.canvas_content_height);
 
-        let bottom_cy = screen_area.bottom_cy() - c_line_width;
+        let bottom_cy = screen_area_handle.bottom_cy() - c_line_width;
         let (tooltip_x, tooltip_y) = place_rect_inside(
             pointer_cx,
             pointer_cy,
             tooltip_width,
             tooltip_height,
             c_line_width,
-            screen_area.right_cx() - c_line_width,
+            screen_area_handle.right_cx() - c_line_width,
             bottom_cy,
             c_expected_tooltip_shift_x,
         );
@@ -226,63 +246,61 @@ impl Tooltip {
         let transparent_color = JsValue::from_str("rgba(0, 0, 0, 0)");
         for (index, (data_set, data_point)) in matches.iter().enumerate() {
             let color = JsValue::from_str(data_set.to_css_color(1.0).as_str());
-            context.begin_path();
-            context.set_line_width(screen.apx_to_cpx(self.chart_config.line_width));
+            crc.begin_path();
+            crc.set_line_width(conf.line_width.to_cpx_height(screen_area_handle));
             if index_with_min_diff_by_value == index {
-                context.set_fill_style(&color);
+                crc.set_fill_style(&color);
             } else {
-                context.set_fill_style(&transparent_color);
+                crc.set_fill_style(&transparent_color);
             }
 
-            context.set_stroke_style(&color);
-            context
-                .arc(
-                    screen_area.get_cx(data_point.coord),
-                    screen_area.get_cy(data_point.value),
-                    screen.apx_to_cpx(self.chart_config.circle_diameter),
-                    0.0,
-                    PI * 2.0,
-                )
-                .unwrap();
-            context.fill();
-            context.stroke();
+            crc.set_stroke_style(&color);
+            crc.arc(
+                coord_space_handle.get_cx(data_point.coord),
+                coord_space_handle.get_cy(data_point.value),
+                conf.circle_diameter.to_cpx_height(screen_area_handle),
+                0.0,
+                PI * 2.0,
+            )
+            .unwrap();
+            crc.fill();
+            crc.stroke();
         }
 
-        let v = &self.chart_config.color_tooltip_font;
+        let v = &conf.color_tooltip_font;
         let font_color =
             JsValue::from_str(format!("rgba({}, {}, {}, {})", v.0, v.1, v.2, v.3,).as_str());
 
-        let v = &self.chart_config.color_tooltip;
+        let v = &conf.color_tooltip;
         let background_color =
             JsValue::from_str(format!("rgba({}, {}, {}, {})", v.0, v.1, v.2, v.3,).as_str());
 
-        context.set_line_width(c_line_width);
-        context.set_fill_style(&background_color);
-        context.set_stroke_style(&font_color);
-        context.stroke_rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
-        context.fill_rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
+        crc.set_line_width(c_line_width);
+        crc.set_fill_style(&background_color);
+        crc.set_stroke_style(&font_color);
+        crc.stroke_rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
+        crc.fill_rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
 
-        context.set_font(
+        crc.set_font(
             format!(
                 "bold {:.0}px {}",
-                screen.apx_to_cpx(self.chart_config.font_size_normal),
-                self.chart_config.font_monospace.as_str()
+                conf.font_size_normal.to_cpx_height(screen_area_handle),
+                conf.font_monospace.as_str()
             )
             .as_str(),
         );
-        context.set_fill_style(&JsValue::from_str("black"));
+        crc.set_fill_style(&JsValue::from_str("black"));
 
-        context.set_text_baseline("top");
-        context.set_text_align("center");
-        context
-            .fill_text(
-                formatted_coord.as_str(),
-                tooltip_x + tooltip_width * 0.5,
-                heading_y,
-            )
-            .unwrap();
+        crc.set_text_baseline("top");
+        crc.set_text_align("center");
+        crc.fill_text(
+            formatted_coord.as_str(),
+            tooltip_x + tooltip_width * 0.5,
+            heading_y,
+        )
+        .unwrap();
 
-        context.set_text_baseline("top");
+        crc.set_text_baseline("top");
 
         for (index, ((data_set, _), formatted_value)) in matches
             .iter()
@@ -293,12 +311,12 @@ impl Tooltip {
             let y = start_y + delta_y * index as f64;
             let color = JsValue::from_str(data_set.to_css_color(1.0).as_str());
 
-            context.set_fill_style(&color);
-            context.fill_rect(color_x, y, c_color_size, c_color_size);
+            crc.set_fill_style(&color);
+            crc.fill_rect(color_x, y, c_color_size, c_color_size);
 
-            context.set_fill_style(&font_color);
+            crc.set_fill_style(&font_color);
 
-            context.set_font(
+            crc.set_font(
                 format!(
                     "{}{:.0}px {}",
                     if index_with_min_diff_by_value == index {
@@ -306,36 +324,31 @@ impl Tooltip {
                     } else {
                         ""
                     },
-                    screen.apx_to_cpx(self.chart_config.font_size_normal),
-                    self.chart_config.font_monospace.as_str()
+                    conf.font_size_normal.to_cpx_height(screen_area_handle),
+                    conf.font_monospace.as_str()
                 )
                 .as_str(),
             );
-            context.set_text_align("left");
-            context
-                .fill_text(data_set.name.as_str(), name_x, y)
-                .unwrap();
+            crc.set_text_align("left");
+            crc.fill_text(data_set.name.as_str(), name_x, y).unwrap();
 
-            context.set_text_align("right");
-            context
-                .fill_text(formatted_value.as_str(), value_x, y)
-                .unwrap();
+            crc.set_text_align("right");
+            crc.fill_text(formatted_value.as_str(), value_x, y).unwrap();
         }
 
         if hidden_lines > 0 {
             let y = start_y + delta_y * matches.len() as f64;
-            context.set_text_align("left");
-            context.set_fill_style(&font_color);
-            context.set_font(
+            crc.set_text_align("left");
+            crc.set_fill_style(&font_color);
+            crc.set_font(
                 format!(
                     "{:.0}px {}",
-                    screen.apx_to_cpx(self.chart_config.font_size_small),
-                    self.chart_config.font_standard.as_str()
+                    conf.font_size_small.to_cpx_height(screen_area_handle),
+                    conf.font_standard.as_str()
                 )
                 .as_str(),
             );
-            context
-                .fill_text(format!("{} hidden", hidden_lines).as_str(), name_x, y)
+            crc.fill_text(format!("{} hidden", hidden_lines).as_str(), name_x, y)
                 .unwrap();
         }
     }

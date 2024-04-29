@@ -5,16 +5,18 @@
  *
  * Copyright (C) 2023, Nikita Almakov
  */
-use crate::utils::js_scroll_coords;
+use crate::screen::ScreenPos;
 use js_sys::Reflect;
 use wasm_bindgen::prelude::*;
 
 pub enum ControlEvent {
-    PointerDown { pos: (f64, f64) },
-    PointerMoved { pos: (f64, f64) },
+    PointerDown { pos: ScreenPos },
+    PointerMoved { pos: ScreenPos },
     PointerUp,
-    PinchStarted { pos1: (f64, f64), pos2: (f64, f64) },
-    PinchUpdated { pos1: (f64, f64), pos2: (f64, f64) },
+    PointerClicked,
+    PointerLeft,
+    PinchStarted { pos1: ScreenPos, pos2: ScreenPos },
+    PinchUpdated { pos1: ScreenPos, pos2: ScreenPos },
     PinchFinished,
 }
 pub trait WatchControls {
@@ -25,8 +27,8 @@ pub trait WatchControls {
 }
 
 pub struct MouseControls {
-    primary_down: Option<(f64, f64)>,
-    primary_moved: Option<(f64, f64)>,
+    primary_down: Option<ScreenPos>,
+    primary_moved: Option<ScreenPos>,
 }
 
 impl MouseControls {
@@ -36,68 +38,86 @@ impl MouseControls {
             primary_moved: None,
         }
     }
-    fn get_event_coordinates(event: &JsValue) -> (f64, f64) {
-        let (scroll_x, scroll_y) = js_scroll_coords();
-        let x = Reflect::get(&event, &JsValue::from_str("clientX"))
+    fn get_event_coordinates(event: &JsValue) -> ScreenPos {
+        let x = Reflect::get(&event, &JsValue::from_str("offsetX"))
             .unwrap()
             .as_f64()
             .unwrap();
-        let y = Reflect::get(&event, &JsValue::from_str("clientY"))
+        let y = Reflect::get(&event, &JsValue::from_str("offsetY"))
             .unwrap()
             .as_f64()
             .unwrap();
-        (x + scroll_x, y + scroll_y)
+        ScreenPos(x, y)
     }
 }
 impl WatchControls for MouseControls {
     fn down(&mut self, event: &JsValue) -> Option<ControlEvent> {
         let pos = Self::get_event_coordinates(event);
-        self.primary_down = Some(pos);
+        self.primary_down = Some(pos.clone());
+        self.primary_moved = None;
         Some(ControlEvent::PointerDown { pos })
     }
     fn moved(&mut self, event: &JsValue) -> Option<ControlEvent> {
         let pos = Self::get_event_coordinates(event);
-        self.primary_moved = Some(pos);
+        self.primary_moved = Some(pos.clone());
         Some(ControlEvent::PointerMoved { pos })
     }
     fn up(&mut self, _event: &JsValue) -> Option<ControlEvent> {
+        let result = if self.primary_moved.is_some() {
+            Some(ControlEvent::PointerUp)
+        } else {
+            Some(ControlEvent::PointerClicked)
+        };
         self.primary_down = None;
         self.primary_moved = None;
-        Some(ControlEvent::PointerUp)
+        result
     }
     fn left(&mut self, _event: &JsValue) -> Option<ControlEvent> {
         self.primary_down = None;
         self.primary_moved = None;
-        None
+        Some(ControlEvent::PointerLeft)
     }
 }
 
 struct Touch {
     id: f64,
-    pos: (f64, f64),
+    pos: ScreenPos,
 }
 
 struct TouchState {
     id: f64,
-    down: (f64, f64),
-    moved: (f64, f64),
+    down: ScreenPos,
+    moved: ScreenPos,
 }
 
 pub struct TouchControls {
     primary: Option<TouchState>,
     secondary: Option<TouchState>,
-    secondary_just_left: bool,
 }
 impl TouchControls {
     pub fn new() -> Self {
         Self {
             primary: None,
             secondary: None,
-            secondary_just_left: false,
         }
     }
     fn get_updated_touches(event: &JsValue) -> Vec<Touch> {
-        let (scroll_x, scroll_y) = js_scroll_coords();
+        let canvas = Reflect::get(event, &JsValue::from_str("target")).unwrap();
+        let rect = Reflect::get(&canvas, &JsValue::from_str("getBoundingClientRect"))
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&canvas)
+            .unwrap();
+        let canvas_x = Reflect::get(&rect, &JsValue::from_str("x"))
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let canvas_y = Reflect::get(&rect, &JsValue::from_str("y"))
+            .unwrap()
+            .as_f64()
+            .unwrap();
+
         let changed_touches = Reflect::get(&event, &JsValue::from_str("changedTouches")).unwrap();
         let number_of_touches = Reflect::get(&changed_touches, &JsValue::from_str("length"))
             .unwrap()
@@ -121,7 +141,7 @@ impl TouchControls {
                     .unwrap();
                 Touch {
                     id,
-                    pos: (scroll_x + x, scroll_y + y),
+                    pos: ScreenPos(x - canvas_x, y - canvas_y),
                 }
             })
             .collect()
@@ -136,8 +156,8 @@ impl WatchControls for TouchControls {
             if let Some(touch) = touches_iter.next() {
                 self.primary = Some(TouchState {
                     id: touch.id,
-                    down: touch.pos,
-                    moved: touch.pos,
+                    down: touch.pos.clone(),
+                    moved: touch.pos.clone(),
                 });
             }
         }
@@ -145,21 +165,20 @@ impl WatchControls for TouchControls {
             if let Some(touch) = touches_iter.next() {
                 self.secondary = Some(TouchState {
                     id: touch.id,
-                    down: touch.pos,
-                    moved: touch.pos,
+                    down: touch.pos.clone(),
+                    moved: touch.pos.clone(),
                 });
-                self.secondary_just_left = false;
                 secondary_set = true;
             }
         }
         if secondary_set {
             Some(ControlEvent::PinchStarted {
-                pos1: self.primary.as_ref().unwrap().down,
-                pos2: self.secondary.as_ref().unwrap().down,
+                pos1: self.primary.as_ref().unwrap().down.clone(),
+                pos2: self.secondary.as_ref().unwrap().down.clone(),
             })
         } else {
             Some(ControlEvent::PointerDown {
-                pos: self.primary.as_ref().unwrap().down,
+                pos: self.primary.as_ref().unwrap().down.clone(),
             })
         }
     }
@@ -171,7 +190,7 @@ impl WatchControls for TouchControls {
         if let Some(primary) = self.primary.as_mut() {
             active_touches += 1;
             if let Some(touch) = touches.iter().filter(|touch| touch.id == primary.id).next() {
-                primary.moved = touch.pos;
+                primary.moved = touch.pos.clone();
                 primary_updated = true;
                 updated_touches += 1;
             }
@@ -183,18 +202,18 @@ impl WatchControls for TouchControls {
                 .filter(|touch| touch.id == secondary.id)
                 .next()
             {
-                secondary.moved = touch.pos;
+                secondary.moved = touch.pos.clone();
                 updated_touches += 1;
             }
         }
         if active_touches == 2 && updated_touches > 0 {
             Some(ControlEvent::PinchUpdated {
-                pos1: self.primary.as_ref().unwrap().moved,
-                pos2: self.secondary.as_ref().unwrap().moved,
+                pos1: self.primary.as_ref().unwrap().moved.clone(),
+                pos2: self.secondary.as_ref().unwrap().moved.clone(),
             })
         } else if primary_updated {
             Some(ControlEvent::PointerMoved {
-                pos: self.primary.as_ref().unwrap().moved,
+                pos: self.primary.as_ref().unwrap().moved.clone(),
             })
         } else {
             None
@@ -202,6 +221,7 @@ impl WatchControls for TouchControls {
     }
     fn up(&mut self, event: &JsValue) -> Option<ControlEvent> {
         let touches = Self::get_updated_touches(event);
+        let mut secondary_just_left = false;
         if let Some(secondary) = self.secondary.as_ref() {
             if let Some(_) = touches
                 .iter()
@@ -209,30 +229,37 @@ impl WatchControls for TouchControls {
                 .next()
             {
                 self.secondary = None;
-                self.secondary_just_left = true;
+                secondary_just_left = true;
             }
         }
+        let mut result: Option<ControlEvent> = None;
+        let mut primary_to_be_dropped = false;
         if let Some(primary) = self.primary.as_ref() {
             if let Some(_) = touches.iter().filter(|touch| touch.id == primary.id).next() {
-                self.primary = None;
-                return if self.secondary_just_left {
-                    self.secondary_just_left = false;
+                primary_to_be_dropped = true;
+                result = if secondary_just_left {
                     Some(ControlEvent::PinchFinished)
                 } else if self.secondary.is_none() {
-                    Some(ControlEvent::PointerUp)
+                    if primary.moved == primary.down {
+                        Some(ControlEvent::PointerClicked)
+                    } else {
+                        Some(ControlEvent::PointerUp)
+                    }
                 } else {
                     None
                 };
             }
-        } else if self.secondary_just_left {
-            self.secondary_just_left = false;
-            return Some(ControlEvent::PinchFinished);
+        } else if secondary_just_left {
+            result = Some(ControlEvent::PinchFinished);
         }
-        None
+        if primary_to_be_dropped {
+            self.primary = None;
+        }
+        result
     }
     fn left(&mut self, _: &JsValue) -> Option<ControlEvent> {
         self.primary = None;
         self.secondary = None;
-        None
+        Some(ControlEvent::PointerLeft)
     }
 }

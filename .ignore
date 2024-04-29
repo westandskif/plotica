@@ -2,3 +2,4 @@ target
 *.vim
 tags
 node_modules
+index-iife.js

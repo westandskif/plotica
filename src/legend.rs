@@ -6,13 +6,17 @@
  * Copyright (C) 2023, Nikita Almakov
  */
 use crate::params::{ChartConfig, Content};
-use crate::screen::{Screen, ScreenRect};
+use crate::screen::ScreenRect;
+use crate::screen::{ScreenArea, ScreenPos, Size};
+use crate::utils::is_click;
+use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-const SCREEN_PADDING: f64 = 5.0;
-const MARGIN_HORIZONTAL: f64 = 15.0;
-const MARGIN_VERTICAL: f64 = 5.0;
+const SCREEN_PADDING: Size = Size::Px(5.0);
+const MARGIN_HORIZONTAL: Size = Size::Px(15.0);
+const MARGIN_VERTICAL: Size = Size::Px(5.0);
+const LINE_WIDTH: Size = Size::Px(2.0);
 
 pub struct LegendItem {
     pub width: f64,
@@ -22,15 +26,17 @@ pub struct LegendItem {
 }
 
 pub struct Legend {
-    pub chart_config: Rc<ChartConfig>,
-    pub items: Vec<LegendItem>,
+    pub chart_config: Rc<RefCell<ChartConfig>>,
+    pub control_screen_area: ScreenArea,
+    pub pointer: Option<ScreenPos>,
+    pub pointer_down: Option<ScreenPos>,
+    pub pointer_down_time_us: Option<f64>,
+    pub items: Option<Rc<Vec<LegendItem>>>,
     pub positions: Vec<ScreenRect>,
     pub arrow_left: Option<ScreenRect>,
     pub arrow_right: Option<ScreenRect>,
-    pub cx_start: f64,
-    pub cx_end: f64,
-    pub cy_start: f64,
-    pub cy_end: f64,
+    pub last_canvas_height: f64,
+    pub last_canvas_width: f64,
     pub offset: usize,
     pub mandatory_right_index: Option<usize>,
     pub approx_per_page: Option<usize>,
@@ -38,42 +44,47 @@ pub struct Legend {
 }
 
 impl Legend {
-    pub fn from_content(chart_config: Rc<ChartConfig>, content: &Content, screen: &Screen) -> Self {
-        let items = Self::content_to_items(Rc::clone(&chart_config), content, screen);
+    pub fn new(chart_config: Rc<RefCell<ChartConfig>>, control_screen_area: ScreenArea) -> Self {
         Self {
             chart_config,
-            items,
+            control_screen_area,
+            pointer: None,
+            pointer_down: None,
+            pointer_down_time_us: None,
+            items: None,
             positions: Vec::new(),
             arrow_left: None,
             arrow_right: None,
-            cx_start: -1.0,
-            cx_end: -1.0,
-            cy_start: -1.0,
-            cy_end: -1.0,
+            last_canvas_height: 0.0,
+            last_canvas_width: 0.0,
             offset: 0,
             mandatory_right_index: None,
             approx_per_page: None,
             has_next: false,
         }
     }
-    fn content_to_items(
-        chart_config: Rc<ChartConfig>,
-        content: &Content,
-        screen: &Screen,
-    ) -> Vec<LegendItem> {
-        let c_font_height = screen.apx_to_cpx(chart_config.font_size_large);
-        let c_font_width = c_font_height * chart_config.font_width_coeff;
-        let c_double_padding = c_font_height;
-        content
-            .data_sets
-            .iter()
-            .map(|data_set| LegendItem {
-                width: c_font_width * data_set.name.len() as f64 + c_double_padding,
-                height: c_font_height + c_double_padding,
-                color: data_set.to_css_color(1.0),
-                name: data_set.name.clone(),
-            })
-            .collect()
+    fn get_items(&mut self, content: &Content) -> Rc<Vec<LegendItem>> {
+        if self.items.is_none() {
+            let screen_area_handle_rc = self.control_screen_area.get_handle();
+            let screen_area_handle = screen_area_handle_rc.as_ref();
+            let conf = self.chart_config.borrow();
+            let c_font_height = conf.font_size_large.to_cpx_height(screen_area_handle);
+            let c_font_width = conf.font_size_large.to_cpx_width(screen_area_handle);
+            let c_double_padding = c_font_height;
+            self.items.replace(Rc::new(
+                content
+                    .data_sets
+                    .iter()
+                    .map(|data_set| LegendItem {
+                        width: c_font_width * data_set.name.len() as f64 + c_double_padding,
+                        height: c_font_height + c_double_padding,
+                        color: data_set.to_css_color(1.0),
+                        name: data_set.name.clone(),
+                    })
+                    .collect(),
+            ));
+        }
+        Rc::clone(self.items.as_ref().unwrap())
     }
     pub fn prev_page(&mut self) {
         if self.offset > 0 {
@@ -88,63 +99,66 @@ impl Legend {
                 self.offset - approx_page_length
             };
 
-            self.cx_end = 0.0; // forcing resize
+            self.last_canvas_height = 0.0; // forcing resize
         }
     }
     pub fn next_page(&mut self) {
-        let current_page_length = self.positions.len();
-        if self.offset + current_page_length < self.items.len() {
-            self.offset += self.positions.len();
-            self.cx_end = 0.0; // forcing resize
+        if let Some(items) = self.items.as_ref() {
+            let current_page_length = self.positions.len();
+            if self.offset + current_page_length < items.len() {
+                self.offset += self.positions.len();
+                self.last_canvas_height = 0.0; // forcing resize
+            }
         }
     }
-    pub fn resize(
-        &mut self,
-        screen: &Screen,
-        cx_start: f64,
-        cx_end: f64,
-        cy_start: f64,
-        cy_end: f64,
-    ) {
-        if self.cx_start == cx_start
-            && self.cx_end == cx_end
-            && self.cy_start == cy_start
-            && self.cy_end == cy_end
+    fn resize(&mut self, content: &Content) {
+        let screen_area_handle_rc = self.control_screen_area.get_handle();
+        let screen_area_handle = screen_area_handle_rc.as_ref();
+        if self.last_canvas_height == screen_area_handle.canvas_content_height
+            && self.last_canvas_width == screen_area_handle.canvas_content_width
         {
             return;
         }
-        self.cx_start = cx_start;
-        self.cx_end = cx_end;
-        self.cy_start = cy_start;
-        self.cy_end = cy_end;
-        let c_screen_padding = screen.apx_to_cpx(SCREEN_PADDING);
-        let c_margin_horizontal = screen.apx_to_cpx(MARGIN_HORIZONTAL);
-        let c_margin_vertical = screen.apx_to_cpx(MARGIN_VERTICAL);
-        let c_arrow_width = screen.apx_to_cpx(self.chart_config.font_size_large)
-            * self.chart_config.font_width_coeff
-            * 3.0;
+        self.last_canvas_height = screen_area_handle.canvas_content_height;
+        self.last_canvas_width = screen_area_handle.canvas_content_width;
 
-        let cy_start = self.cy_start + c_screen_padding;
-        let cy_end = self.cy_end - c_screen_padding;
+        let conf = self.chart_config.borrow();
+
+        let c_screen_padding = SCREEN_PADDING.to_cpx_height(screen_area_handle);
+        let c_margin_horizontal = MARGIN_HORIZONTAL.to_cpx_height(screen_area_handle);
+        let c_margin_vertical = MARGIN_VERTICAL.to_cpx_height(screen_area_handle);
+        let c_arrow_width = conf.font_size_large.to_cpx_width(screen_area_handle) * 3.0;
+        drop(conf);
+
+        let cy_start = screen_area_handle.top_cy() + c_screen_padding;
+        let cy_end = screen_area_handle.bottom_cy() - c_screen_padding;
 
         let mut with_buttons = self.offset > 0;
         let mut cx_start: f64;
         let mut cx_end: f64;
+        let mut has_next;
+        let mut approx_per_page: Option<usize> = None;
+        let mut positions: Vec<ScreenRect>;
+        let mut offset = self.offset;
+        let mandatory_right_index = self.mandatory_right_index.clone();
+
         loop {
             if with_buttons {
-                cx_start = self.cx_start + c_arrow_width + c_margin_horizontal;
-                cx_end = self.cx_end - c_arrow_width - c_margin_horizontal;
+                cx_start = screen_area_handle.left_cx() + c_arrow_width + c_margin_horizontal;
+                cx_end = screen_area_handle.right_cx() - c_arrow_width - c_margin_horizontal;
             } else {
-                cx_start = self.cx_start + c_screen_padding;
-                cx_end = self.cx_end - c_screen_padding;
+                cx_start = screen_area_handle.left_cx() + c_screen_padding;
+                cx_end = screen_area_handle.right_cx() - c_screen_padding;
             }
 
             let mut cx = cx_start;
             let mut cy = cy_start;
-            self.has_next = false;
+            has_next = false;
 
-            let mut positions: Vec<ScreenRect> = Vec::new();
-            for item in self.items.iter().skip(self.offset) {
+            positions = Vec::new();
+            let items = self.get_items(content);
+
+            for item in items.iter().skip(offset) {
                 if cx + item.width > cx_end {
                     cx = cx_start;
                     cy += item.height + c_margin_vertical;
@@ -153,30 +167,33 @@ impl Legend {
                     if positions.len() == 0 {
                         break;
                     }
-                    self.has_next = true;
-                    self.approx_per_page = Some(positions.len());
+                    has_next = true;
+                    approx_per_page = Some(positions.len());
                     break;
                 }
                 positions.push(ScreenRect::from_width(cx, cy, item.width, item.height));
                 cx += item.width + c_margin_horizontal;
             }
-            if let Some(mandatory_right_index) = self.mandatory_right_index {
-                let right_index = self.offset + positions.len() - 1;
+            if let Some(mandatory_right_index) = mandatory_right_index {
+                let right_index = offset + positions.len() - 1;
                 if right_index < mandatory_right_index {
-                    self.offset += mandatory_right_index - right_index;
+                    offset += mandatory_right_index - right_index;
                     continue;
                 }
             }
-            if self.has_next && !with_buttons {
+            if has_next && !with_buttons {
                 with_buttons = true;
                 continue;
             }
-            self.positions = positions;
             break;
         }
+        self.offset = offset;
+        self.positions = positions;
+        self.approx_per_page = approx_per_page;
         self.mandatory_right_index = None;
+        self.has_next = has_next;
 
-        if self.offset > 0 || self.has_next {
+        if self.offset > 0 || has_next {
             let arrow_height = self.positions[self.positions.len() - 1].cy2 - self.positions[0].cy1;
             self.arrow_left = Some(ScreenRect::from_width(
                 cx_start - c_arrow_width - c_margin_horizontal,
@@ -196,52 +213,59 @@ impl Legend {
         }
     }
 
-    pub fn draw(&mut self, content: &Content, screen: &mut Screen, _time_us: f64) {
-        screen.clear();
-        let context = &screen.context;
+    pub fn draw(&mut self, content: &Content) {
+        self.resize(content);
+        let screen_area_handle_rc = self.control_screen_area.get_handle();
+        let screen_area_handle = screen_area_handle_rc.as_ref();
+
+        let crc = screen_area_handle.crc.as_ref();
 
         let color_white = JsValue::from_str("white");
 
-        context.set_font(
-            format!(
-                "{:.0}px {}",
-                screen.apx_to_cpx(self.chart_config.font_size_large),
-                self.chart_config.font_standard.as_str()
-            )
-            .as_str(),
-        );
-        context.set_text_baseline("middle");
-        context.set_text_align("center");
-        context.set_line_width(screen.apx_to_cpx(2.0));
+        {
+            let conf = self.chart_config.borrow();
+            crc.set_font(
+                format!(
+                    "{:.0}px {}",
+                    conf.font_size_large.to_cpx_height(screen_area_handle),
+                    conf.font_standard.as_str(),
+                )
+                .as_str(),
+            );
+        }
+        crc.set_text_baseline("middle");
+        crc.set_text_align("center");
+        crc.set_line_width(LINE_WIDTH.to_cpx_height(screen_area_handle));
 
-        for ((item, position), data_set) in self
-            .items
+        let offset = self.offset;
+        let items = self.get_items(content);
+        for ((item, position), data_set) in items
             .iter()
-            .skip(self.offset)
+            .skip(offset)
             .zip(self.positions.iter())
-            .zip(content.data_sets.iter().skip(self.offset))
+            .zip(content.data_sets.iter().skip(offset))
         {
             let color = JsValue::from_str(item.color.as_str());
-            context.set_fill_style(&color);
+            crc.set_fill_style(&color);
             if data_set.alpha.get_end_value() == 0.0 {
-                context.set_stroke_style(&color);
-                context.stroke_rect(position.cx1, position.cy1, item.width, item.height);
+                crc.set_stroke_style(&color);
+                crc.stroke_rect(position.cx1, position.cy1, item.width, item.height);
             } else {
-                context.fill_rect(position.cx1, position.cy1, item.width, item.height);
-                context.set_fill_style(&color_white);
+                crc.fill_rect(position.cx1, position.cy1, item.width, item.height);
+                crc.set_fill_style(&color_white);
             }
-            context
-                .fill_text(
-                    item.name.as_str(),
-                    position.cx1 + 0.5 * item.width,
-                    position.cy1 + 0.5 * item.height,
-                )
-                .unwrap();
+            crc.fill_text(
+                item.name.as_str(),
+                position.cx1 + 0.5 * item.width,
+                position.cy1 + 0.5 * item.height,
+            )
+            .unwrap();
         }
 
+        let conf = self.chart_config.borrow();
         if let (Some(arrow_left), Some(arrow_right)) = (&self.arrow_left, &self.arrow_right) {
-            let v = &self.chart_config.color_preview_overlay;
-            context.set_fill_style(&JsValue::from_str(
+            let v = conf.color_preview_overlay;
+            crc.set_fill_style(&JsValue::from_str(
                 format!(
                     "rgba({}, {}, {}, {})",
                     v.0,
@@ -251,13 +275,13 @@ impl Legend {
                 )
                 .as_str(),
             ));
-            context.fill_rect(
+            crc.fill_rect(
                 arrow_left.cx1,
                 arrow_left.cy1,
                 arrow_left.width(),
                 arrow_left.height(),
             );
-            context.set_fill_style(&JsValue::from_str(
+            crc.set_fill_style(&JsValue::from_str(
                 format!(
                     "rgba({}, {}, {}, {})",
                     v.0,
@@ -267,22 +291,22 @@ impl Legend {
                 )
                 .as_str(),
             ));
-            context.fill_rect(
+            crc.fill_rect(
                 arrow_right.cx1,
                 arrow_right.cy1,
                 arrow_right.width(),
                 arrow_right.height(),
             );
-            context.set_font(
+            crc.set_font(
                 format!(
                     "{:.0}px {}",
-                    screen.apx_to_cpx(self.chart_config.font_size_large),
-                    self.chart_config.font_standard.as_str()
+                    conf.font_size_large.to_cpx_height(screen_area_handle),
+                    conf.font_standard.as_str()
                 )
                 .as_str(),
             );
-            let v = &self.chart_config.color_preview_hint;
-            context.set_fill_style(&JsValue::from_str(
+            let v = conf.color_preview_hint;
+            crc.set_fill_style(&JsValue::from_str(
                 format!("rgba({}, {}, {}, {})", v.0, v.1, v.2, v.3).as_str(),
             ));
             let c_width = arrow_left.width();
@@ -292,32 +316,137 @@ impl Legend {
             let c_vertical = c_size * 0.4;
             let cx_center = arrow_left.cx_center();
             let cy_center = arrow_left.cy_center();
-            context.begin_path();
-            context.move_to(
+            crc.begin_path();
+            crc.move_to(
                 cx_center + c_horizontal * 0.35,
                 cy_center - c_vertical * 0.5,
             );
-            context.line_to(
+            crc.line_to(
                 cx_center + c_horizontal * 0.35,
                 cy_center + c_vertical * 0.5,
             );
-            context.line_to(cx_center - c_horizontal * 0.65, cy_center);
-            context.close_path();
-            context.fill();
+            crc.line_to(cx_center - c_horizontal * 0.65, cy_center);
+            crc.close_path();
+            crc.fill();
             let cx_center = arrow_right.cx_center();
             let cy_center = arrow_right.cy_center();
-            context.begin_path();
-            context.move_to(
+            crc.begin_path();
+            crc.move_to(
                 cx_center - c_horizontal * 0.35,
                 cy_center - c_vertical * 0.5,
             );
-            context.line_to(
+            crc.line_to(
                 cx_center - c_horizontal * 0.35,
                 cy_center + c_vertical * 0.5,
             );
-            context.line_to(cx_center + c_horizontal * 0.65, cy_center);
-            context.close_path();
-            context.fill();
+            crc.line_to(cx_center + c_horizontal * 0.65, cy_center);
+            crc.close_path();
+            crc.fill();
         }
+    }
+    pub fn on_click(&mut self, content: &mut Content, time_us: f64) -> bool {
+        let mut made_changes = false;
+        if let Some(pos) = self.pointer_down.as_ref() {
+            let screen_area_handle = self.control_screen_area.get_handle();
+
+            let cx = screen_area_handle.get_cx(pos);
+            let cy = screen_area_handle.get_cy(pos);
+            let mut clicked_index: Option<usize> = None;
+            for (index, position) in self.positions.iter().enumerate() {
+                if position.contains(cx, cy) {
+                    clicked_index = Some(index);
+                    break;
+                }
+            }
+            if let Some(index) = clicked_index {
+                self.toggle_data_set(content, self.offset + index, time_us)
+                    .unwrap();
+                made_changes = true;
+            }
+            if let Some(arrow_left) = &self.arrow_left {
+                if arrow_left.contains(cx, cy) {
+                    self.prev_page();
+                    made_changes = true;
+                }
+            }
+            if let Some(arrow_right) = &self.arrow_right {
+                if arrow_right.contains(cx, cy) {
+                    self.next_page();
+                    made_changes = true;
+                }
+            }
+        }
+        made_changes
+    }
+    pub fn on_long_press(&mut self, content: &mut Content, time_us: f64) -> usize {
+        if let (Some(pointer_down_time_us), Some(pointer_down), Some(pointer)) = (
+            &self.pointer_down_time_us,
+            &self.pointer_down,
+            &self.pointer,
+        ) {
+            let conf = self.chart_config.borrow();
+
+            if time_us - *pointer_down_time_us > conf.us_long_press
+                && is_click(pointer_down, pointer)
+            {
+                let screen_area_handle = self.control_screen_area.get_handle();
+                let mut clicked_index: Option<usize> = None;
+                let cx = screen_area_handle.get_cx(pointer);
+                let cy = screen_area_handle.get_cy(pointer);
+                for (index, position) in self.positions.iter().enumerate() {
+                    if position.contains(cx, cy) {
+                        clicked_index = Some(index);
+                        break;
+                    }
+                }
+                if let Some(index) = clicked_index {
+                    let index_to_show = index + self.offset;
+                    for (index, data_set) in content.data_sets.iter_mut().enumerate() {
+                        data_set.alpha.set_value(
+                            if index == index_to_show { 1.0 } else { 0.0 },
+                            Some(time_us),
+                        );
+                    }
+                    self.pointer_down = None;
+                    self.pointer_down_time_us = None;
+                }
+            }
+            1
+        } else {
+            0
+        }
+    }
+
+    fn toggle_data_set(
+        &self,
+        content: &mut Content,
+        index: usize,
+        time_us: f64,
+    ) -> Result<(), String> {
+        let number_of_data_sets = content.data_sets.len();
+        if index >= number_of_data_sets {
+            return Err(format!(
+                "chart contains {number_of_data_sets} data sets; index is out of bound"
+            ));
+        }
+        let is_visible = content.data_sets[index].alpha.get_end_value() == 1.0;
+        if is_visible
+            && content
+                .data_sets
+                .iter()
+                .filter(|data_set| data_set.alpha.get_end_value() == 1.0)
+                .count()
+                == 1
+        {
+            for (index_, data_set) in content.data_sets.iter_mut().enumerate() {
+                if index_ != index {
+                    data_set.alpha.set_value(1.0, Some(time_us));
+                }
+            }
+        } else {
+            let alpha = &mut content.data_sets[index].alpha;
+            alpha.set_value(1.0 - alpha.get_end_value(), Some(time_us));
+        }
+        Ok(())
     }
 }

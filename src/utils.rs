@@ -5,36 +5,12 @@
  *
  * Copyright (C) 2023, Nikita Almakov
  */
-use js_sys::Reflect;
-use wasm_bindgen::prelude::*;
+use crate::screen::ScreenPos;
 
-pub fn is_click(pos1: &Option<(f64, f64)>, pos2: &Option<(f64, f64)>) -> bool {
-    match (pos1, pos2) {
-        (Some((x1, y1)), Some((x2, y2))) => {
-            *x1 == *x2 && *y1 == *y2
-            // let delta_x = (*x1 - *x2).abs();
-            // let delta_y = (*y1 - *y2).abs();
-            // (delta_x * delta_x + delta_y * delta_y).sqrt() <= 3.0
-        }
-        _ => false,
-    }
+pub fn is_click(pos1: &ScreenPos, pos2: &ScreenPos) -> bool {
+    pos1.0 == pos2.0 && pos1.1 == pos2.1
 }
-pub fn js_scroll_coords() -> (f64, f64) {
-    let window = web_sys::window().unwrap();
-    let scroll_x = Reflect::get(&window, &JsValue::from_str("scrollX"))
-        .unwrap()
-        .as_f64()
-        .unwrap();
-    let scroll_y = Reflect::get(&window, &JsValue::from_str("scrollY"))
-        .unwrap()
-        .as_f64()
-        .unwrap();
-    (scroll_x, scroll_y)
-}
-pub fn js_coords_to_global(x: f64, y: f64) -> (f64, f64) {
-    let (scroll_x, scroll_y) = js_scroll_coords();
-    (scroll_x + x, scroll_y + y)
-}
+
 pub fn place_rect_inside(
     desired_x: f64,
     desired_y: f64,

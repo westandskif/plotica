@@ -6,6 +6,7 @@
  * Copyright (C) 2023, Nikita Almakov
  */
 use crate::data_set::{DataPoint, DataSet};
+use crate::screen::Size;
 use chrono::prelude::*;
 use js_sys::Reflect;
 use std::str::{from_utf8_unchecked, FromStr};
@@ -106,7 +107,7 @@ impl VerboseFormat {
             Self::Date { fmt_str } => values
                 .map(getter)
                 .map(|value| {
-                    NaiveDateTime::from_timestamp_millis(value as i64)
+                    DateTime::from_timestamp_millis(value as i64)
                         .unwrap()
                         .format(fmt_str)
                         .to_string()
@@ -115,7 +116,7 @@ impl VerboseFormat {
             Self::DateTime { fmt_str, tz_offset } => values
                 .map(getter)
                 .map(|value| {
-                    DateTime::<FixedOffset>::from_utc(NaiveDateTime::from_timestamp_millis(value as i64).unwrap(), *tz_offset)
+                    DateTime::from_timestamp(value as i64, 0).unwrap().with_timezone(tz_offset)
                         .format(fmt_str)
                         .to_string()
                 })
@@ -530,6 +531,24 @@ impl Content {
             DataSetSorting::None => {}
         }
     }
+    pub fn get_min_max(&mut self) -> [f64; 4] {
+        let mut coord_min: f64 = f64::MAX;
+        let mut coord_max: f64 = f64::MIN;
+        let mut value_min: f64 = f64::MAX;
+        let mut value_max: f64 = f64::MIN;
+        for data_set in self.data_sets.iter_mut() {
+            if data_set.alpha.get_end_value() > 0.0 {
+                coord_min = coord_min.min(data_set.data_points[0].coord);
+                coord_max =
+                    coord_min.max(data_set.data_points[data_set.data_points.len() - 1].coord);
+                for data_point in data_set.data_points.iter() {
+                    value_min = value_min.min(data_point.value);
+                    value_max = value_max.max(data_point.value);
+                }
+            }
+        }
+        [coord_min, coord_max, value_min, value_max]
+    }
 }
 
 pub enum DataSetSorting {
@@ -560,12 +579,12 @@ impl FromStr for DataSetSorting {
 pub struct ChartConfig {
     pub font_standard: String,
     pub font_monospace: String,
-    pub font_size_small: f64,
-    pub font_size_normal: f64,
-    pub font_size_large: f64,
+    pub font_size_small: Size,
+    pub font_size_normal: Size,
+    pub font_size_large: Size,
     pub font_width_coeff: f64,
-    pub line_width: f64,
-    pub circle_diameter: f64,
+    pub line_width: Size,
+    pub circle_diameter: Size,
     pub color_grid: (u8, u8, u8),
     pub color_tick: (u8, u8, u8),
     pub color_camera_grip: (u8, u8, u8, f64),
@@ -594,7 +613,7 @@ impl ChartConfig {
             "layoutLegendHeight".to_string()
         })?;
         let total_height_norm =
-            (layout_content_height + layout_preview_height + layout_legend_height).recip() * 100.0;
+            (layout_content_height + layout_preview_height + layout_legend_height).recip();
 
         let color_palette: Result<Vec<(u8, u8, u8)>, String> =
             get_array_by_str_key(raw_config, "colorPalette", &|| "colorPalette".to_string())?
@@ -610,22 +629,34 @@ impl ChartConfig {
             font_monospace: get_string_by_str_key(raw_config, "fontMonospace", &|| {
                 "fontMonospace".to_string()
             })?,
-            font_size_small: get_f64_by_str_key(raw_config, "fontSizeSmall", &|| {
-                "fontSizeSmall".to_string()
-            })?,
-            font_size_normal: get_f64_by_str_key(raw_config, "fontSizeNormal", &|| {
-                "fontSizeNormal".to_string()
-            })?,
-            font_size_large: get_f64_by_str_key(raw_config, "fontSizeLarge", &|| {
-                "fontSizeLarge".to_string()
-            })?,
+            font_size_small: Size::TextLine {
+                font_size: get_f64_by_str_key(raw_config, "fontSizeSmall", &|| {
+                    "fontSizeSmall".to_string()
+                })?,
+                columns: 1.0,
+            },
+            font_size_normal: Size::TextLine {
+                font_size: get_f64_by_str_key(raw_config, "fontSizeNormal", &|| {
+                    "fontSizeNormal".to_string()
+                })?,
+                columns: 1.0,
+            },
+            font_size_large: Size::TextLine {
+                font_size: get_f64_by_str_key(raw_config, "fontSizeLarge", &|| {
+                    "fontSizeLarge".to_string()
+                })?,
+                columns: 1.0,
+            },
             font_width_coeff: get_f64_by_str_key(raw_config, "fontWidthCoeff", &|| {
                 "fontWidthCoeff".to_string()
             })?,
-            line_width: get_f64_by_str_key(raw_config, "lineWidth", &|| "lineWidth".to_string())?,
-            circle_diameter: get_f64_by_str_key(raw_config, "circleRadius", &|| {
-                "circleRadius".to_string()
-            })? * 2.0,
+            line_width: Size::Px(get_f64_by_str_key(raw_config, "lineWidth", &|| {
+                "lineWidth".to_string()
+            })?),
+            circle_diameter: Size::Px(
+                get_f64_by_str_key(raw_config, "circleRadius", &|| "circleRadius".to_string())?
+                    * 2.0,
+            ),
             color_grid: get_rgb_by_str_key(raw_config, "colorGrid", &|| "colorGrid".to_string())?,
             color_tick: get_rgb_by_str_key(raw_config, "colorTick", &|| "colorTick".to_string())?,
             color_camera_grip: get_rgba_by_str_key(raw_config, "colorCameraGrip", &|| {

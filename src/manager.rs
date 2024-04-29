@@ -5,7 +5,6 @@
  *
  * Copyright (C) 2023, Nikita Almakov
  */
-use crate::controls::{MouseControls, TouchControls, WatchControls};
 use crate::events::JsEventListener;
 use crate::main_chart::{DrawChart, MainChart};
 use crate::params::{ChartConfig, ChartParams, ClientCaps};
@@ -16,20 +15,12 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 pub struct ChartManager {
-    global_pointer_move: Option<JsEventListener>,
-    global_pointer_out: Option<JsEventListener>,
-    global_pointer_down: Option<JsEventListener>,
-    global_pointer_up: Option<JsEventListener>,
     global_window_resize: Option<JsEventListener>,
     global_orintation_change: Option<JsEventListener>,
-    global_request_animation_frame_closure: Option<Closure<dyn Fn(JsValue)>>,
-    animation_frame_requested: bool,
-    charts: Rc<RefCell<Vec<Box<dyn DrawChart>>>>,
+    charts: Rc<RefCell<Vec<Pin<Box<dyn DrawChart>>>>>,
     chart_ids: Vec<String>,
-    control_watcher: Rc<RefCell<Box<dyn WatchControls>>>,
     touch_device: bool,
     client_caps: Rc<RefCell<ClientCaps>>,
     _pin: PhantomPinned,
@@ -39,21 +30,10 @@ impl ChartManager {
     pub fn new() -> Pin<Box<Self>> {
         let touch_device = Self::is_touch_device();
         Box::pin(Self {
-            global_pointer_move: None,
-            global_pointer_out: None,
-            global_pointer_up: None,
-            global_pointer_down: None,
             global_window_resize: None,
             global_orintation_change: None,
-            global_request_animation_frame_closure: None,
-            animation_frame_requested: false,
             charts: Rc::new(RefCell::new(Vec::new())),
             chart_ids: Vec::new(),
-            control_watcher: Rc::new(RefCell::new(if touch_device {
-                Box::new(TouchControls::new())
-            } else {
-                Box::new(MouseControls::new())
-            })),
             touch_device,
             client_caps: Rc::new(RefCell::new(ClientCaps::detect())),
             _pin: PhantomPinned,
@@ -99,22 +79,24 @@ impl ChartManager {
             > min_linear_covered_square * chart_config.auto_log_scale_threshold
         {
             let preview_scale = LogScale::new(&chart_params.content);
-            self.charts.borrow_mut().push(Box::new(MainChart::new(
+            self.charts.borrow_mut().push(MainChart::new(
                 chart_params,
                 chart_config,
                 Rc::clone(&self.client_caps),
                 log_main_scale,
                 preview_scale,
-            )?));
+                self.touch_device,
+            )?);
         } else {
             let preview_scale = LinearScale::new(&chart_params.content);
-            self.charts.borrow_mut().push(Box::new(MainChart::new(
+            self.charts.borrow_mut().push(MainChart::new(
                 chart_params,
                 chart_config,
                 Rc::clone(&self.client_caps),
                 linear_main_scale,
                 preview_scale,
-            )?));
+                self.touch_device,
+            )?);
         };
 
         unsafe { self.as_mut().get_unchecked_mut() }.ensure_global_listeners_are_set_up();
@@ -148,107 +130,26 @@ impl ChartManager {
     }
 
     fn uninstall_listeners(&mut self) {
-        self.global_pointer_move = None;
-        self.global_pointer_out = None;
-        self.global_pointer_down = None;
-        self.global_pointer_up = None;
         self.global_window_resize = None;
         self.global_orintation_change = None;
     }
 
     fn ensure_global_listeners_are_set_up(&mut self) {
-        if self.global_pointer_move.is_some() {
+        if self.global_window_resize.is_some() {
             return;
         }
-        let charts = Rc::clone(&self.charts);
-        let control_watcher = Rc::clone(&self.control_watcher);
-        let ptr = self as *mut Self;
-        self.global_pointer_down = Some(JsEventListener::new(
-            web_sys::window().unwrap().into(),
-            if self.touch_device {
-                "touchstart"
-            } else {
-                "mousedown"
-            },
-            Box::new(move |event: JsValue| {
-                if let Some(control_event) = control_watcher.borrow_mut().down(&event) {
-                    let time_us = Self::get_time_us();
-                    for chart in charts.borrow_mut().iter_mut() {
-                        chart.on_control_event(&control_event, time_us);
-                    }
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() }
-                }
-            }),
-        ));
-        let charts = Rc::clone(&self.charts);
-        let control_watcher = Rc::clone(&self.control_watcher);
-        self.global_pointer_up = Some(JsEventListener::new(
-            web_sys::window().unwrap().into(),
-            if self.touch_device {
-                "touchend"
-            } else {
-                "mouseup"
-            },
-            Box::new(move |event: JsValue| {
-                if let Some(control_event) = control_watcher.borrow_mut().up(&event) {
-                    let time_us = Self::get_time_us();
-                    for chart in charts.borrow_mut().iter_mut() {
-                        chart.on_control_event(&control_event, time_us);
-                    }
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() }
-                }
-            }),
-        ));
-        let charts = Rc::clone(&self.charts);
-        let control_watcher = Rc::clone(&self.control_watcher);
-        self.global_pointer_move = Some(JsEventListener::new(
-            web_sys::window().unwrap().into(),
-            if self.touch_device {
-                "touchmove"
-            } else {
-                "mousemove"
-            },
-            Box::new(move |event: JsValue| {
-                if let Some(control_event) = control_watcher.borrow_mut().moved(&event) {
-                    let time_us = Self::get_time_us();
-                    for chart in charts.borrow_mut().iter_mut() {
-                        chart.on_control_event(&control_event, time_us);
-                    }
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() }
-                }
-            }),
-        ));
-        if self.touch_device {
-            let charts = Rc::clone(&self.charts);
-            let control_watcher = Rc::clone(&self.control_watcher);
-            self.global_pointer_out = Some(JsEventListener::new(
-                web_sys::window().unwrap().into(),
-                "touchcancel",
-                Box::new(move |event: JsValue| {
-                    if let Some(control_event) = control_watcher.borrow_mut().left(&event) {
-                        let time_us = Self::get_time_us();
-                        for chart in charts.borrow_mut().iter_mut() {
-                            chart.on_control_event(&control_event, time_us);
-                        }
-                        unsafe { ptr.as_mut().unwrap().request_animation_frame() }
-                    }
-                }),
-            ));
-        }
+        let client_caps = Rc::clone(&self.client_caps);
         let charts = Rc::clone(&self.charts);
         self.global_window_resize = Some(JsEventListener::new(
             web_sys::window().unwrap().into(),
             "resize",
             Box::new(move |_: JsValue| {
                 for chart in charts.borrow_mut().iter_mut() {
-                    chart.on_resize();
+                    unsafe { Pin::into_inner_unchecked(chart.as_mut()) }.on_resize();
                 }
-                unsafe { ptr.as_mut().unwrap().request_animation_frame() }
             }),
         ));
-        let client_caps = Rc::clone(&self.client_caps);
         let charts = Rc::clone(&self.charts);
-        let ptr = self as *mut Self;
         if self.client_caps.borrow().screen_orientation {
             self.global_orintation_change = Some(JsEventListener::new(
                 Reflect::get(&web_sys::window().unwrap(), &JsValue::from_str("screen"))
@@ -259,9 +160,8 @@ impl ChartManager {
                 Box::new(move |_: JsValue| {
                     *client_caps.borrow_mut() = ClientCaps::detect();
                     for chart in charts.borrow_mut().iter_mut() {
-                        chart.on_resize();
+                        unsafe { Pin::into_inner_unchecked(chart.as_mut()) }.on_resize();
                     }
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() }
                 }),
             ));
         } else {
@@ -271,45 +171,10 @@ impl ChartManager {
                 Box::new(move |_: JsValue| {
                     *client_caps.borrow_mut() = ClientCaps::detect();
                     for chart in charts.borrow_mut().iter_mut() {
-                        chart.on_resize();
+                        unsafe { Pin::into_inner_unchecked(chart.as_mut()) }.on_resize();
                     }
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() }
                 }),
             ));
-        }
-
-        if self.global_request_animation_frame_closure.is_none() {
-            let charts = Rc::clone(&self.charts);
-            let ptr = self as *mut Self;
-            let closure = Closure::new(Box::new(move |time_ms: JsValue| {
-                unsafe { ptr.as_mut().unwrap().animation_frame_requested = false }
-
-                let mut actions: usize = 0;
-                let time_us = time_ms.as_f64().unwrap() * 1000.0;
-                for chart in charts.borrow_mut().iter_mut() {
-                    actions += chart.draw(time_us);
-                }
-                if actions > 0 {
-                    unsafe { ptr.as_mut().unwrap().request_animation_frame() };
-                }
-            }));
-            self.global_request_animation_frame_closure = Some(closure);
-        }
-        self.request_animation_frame();
-    }
-    fn request_animation_frame(&mut self) {
-        if !self.animation_frame_requested {
-            web_sys::window()
-                .unwrap()
-                .request_animation_frame(
-                    self.global_request_animation_frame_closure
-                        .as_ref()
-                        .unwrap()
-                        .as_ref()
-                        .unchecked_ref(),
-                )
-                .unwrap();
-            self.animation_frame_requested = true;
         }
     }
     fn inject_content_wrapper(selector: &str) -> Result<String, String> {
@@ -339,9 +204,6 @@ impl ChartManager {
             .unwrap()
             .is_undefined()
             && window.navigator().max_touch_points() > 0
-    }
-    fn get_time_us() -> f64 {
-        web_sys::window().unwrap().performance().unwrap().now() * 1000.0
     }
 }
 

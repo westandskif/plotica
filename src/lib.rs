@@ -17,10 +17,12 @@ mod legend;
 mod main_chart;
 mod manager;
 mod params;
+mod preview;
 mod scale;
 mod screen;
 mod tooltip;
 mod utils;
+mod versioned;
 use crate::manager::{get_or_create_manager_addr, ChartManager};
 use std::pin::Pin;
 

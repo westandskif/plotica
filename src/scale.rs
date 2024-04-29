@@ -8,7 +8,7 @@
 use crate::params::Content;
 
 pub trait Scale: Clone {
-    fn change_focus(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64);
+    fn reframe(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64);
     fn get_coord_min(&self) -> f64;
     fn get_coord_max(&self) -> f64;
     fn get_value_min(&self) -> f64;
@@ -52,7 +52,7 @@ impl LinearScale {
 }
 
 impl Scale for LinearScale {
-    fn change_focus(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64) {
+    fn reframe(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64) {
         let coord_range = coord_max - coord_min;
         if coord_range == 0.0 {
             panic!("coord range cannot be zero")
@@ -146,7 +146,7 @@ impl LogScale {
 }
 
 impl Scale for LogScale {
-    fn change_focus(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64) {
+    fn reframe(&mut self, coord_min: f64, coord_max: f64, value_min: f64, value_max: f64) {
         let coord_range = coord_max - coord_min;
         if coord_range == 0.0 {
             panic!("coord range cannot be zero")
@@ -183,7 +183,8 @@ impl Scale for LogScale {
     }
     #[inline]
     fn denormalize_value(&self, normalized_value: f64) -> f64 {
-        10.0_f64.powf(normalized_value * self.value_log_range + self.value_log_base) - MIN_VALUE_TO_LOG
+        10.0_f64.powf(normalized_value * self.value_log_range + self.value_log_base)
+            - MIN_VALUE_TO_LOG
             + self.value_global_min
     }
     #[inline]

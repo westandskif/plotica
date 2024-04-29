@@ -8,31 +8,29 @@
 use crate::animate::ANIMATED_NUMBERS_COUNT;
 use crate::camera::Camera;
 use crate::controls::ControlEvent;
+use crate::controls::{MouseControls, TouchControls, WatchControls};
+use crate::events::JsEventListener;
 use crate::legend::Legend;
 use crate::params::{ChartConfig, ChartParams, ClientCaps, Content};
+use crate::preview::Preview;
 use crate::scale::Scale;
-use crate::screen::Screen;
+use crate::screen::{CoordSpaceHandle, Padding, Screen, ScreenArea, ScreenPos, Size};
 use crate::tooltip::Tooltip;
-use crate::utils::is_click;
 use std::cell::RefCell;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 use wasm_bindgen::prelude::*;
 
-fn get_tick_width(chart_config: &ChartConfig, font_size: f64, expected_len: usize) -> f64 {
-    chart_config.font_width_coeff * font_size * expected_len as f64
-}
-fn get_tick_height(_chart_config: &ChartConfig, font_size: f64) -> f64 {
-    font_size * 2.0
-}
 const CSS_DISABLE_DEFAULT_LONG_TOUCH: &'static str =
     "-webkit-touch-callout: none !important; -webkit-user-select: none !important";
 const CSS_DISABLE_TOUCH_GESTURES: &'static str = "touch-action: none";
 pub trait DrawChart {
     fn on_control_event(&mut self, event: &ControlEvent, time_us: f64);
     fn on_resize(&mut self);
-    fn draw(&mut self, time_us: f64) -> usize;
+    fn draw(&mut self, time_us: f64);
 }
 pub struct MainChart<T>
 where
@@ -40,27 +38,28 @@ where
 {
     pub container_selector: String,
     pub client_caps: Rc<RefCell<ClientCaps>>,
-    pub config: Rc<ChartConfig>,
+    pub config: Rc<RefCell<ChartConfig>>,
     pub content: Content,
-    pub pointer_position: Option<(f64, f64)>,
-    pub camera_grip_x_offset: Option<f64>,
-    pub camera_grip_pointer_down_position: Option<(f64, f64)>,
-    pub camera_grip_screen: Screen,
-    pub main_camera: Camera<T>,
-    pub main_screen: Screen,
-    pub preview_camera: Camera<T>,
-    pub preview_screen: Screen,
-    pub tooltip: Tooltip,
-    pub tooltip_pointer_down_position: Option<(f64, f64)>,
-    pub tooltip_pinch_coords: Option<(f64, f64)>,
-    pub tooltip_screen: Screen,
-    pub zoomed_in: bool,
-    pub legend_screen: Screen,
+    pub content_screen: Rc<Screen>,
+    pub control_screen: Rc<Screen>,
+
+    pub preview: Preview<T>,
+    pub camera: Camera<T>,
+
     pub legend: Legend,
-    pub legend_pointer_down_position: Option<(f64, f64)>,
-    pub legend_pointer_down_time_us: Option<f64>,
     pub dirty: bool,
+
+    control_watcher: Rc<RefCell<Box<dyn WatchControls>>>,
+    touch_device: bool,
+    pointer_down: Option<JsEventListener>,
+    pointer_move: Option<JsEventListener>,
+    pointer_out: Option<JsEventListener>,
+    pointer_up: Option<JsEventListener>,
+    animation_frame_requested: bool,
+    request_animation_frame_closure: Option<Closure<dyn Fn(JsValue)>>,
+    _pin: PhantomPinned,
 }
+
 impl<T> MainChart<T>
 where
     T: Scale,
@@ -71,380 +70,344 @@ where
         client_caps: Rc<RefCell<ClientCaps>>,
         main_scale: T,
         preview_scale: T,
-    ) -> Result<MainChart<T>, String> {
-        let config = Rc::new(config);
-        let main_screen = Screen::new(
+        touch_device: bool,
+    ) -> Result<Pin<Box<Self>>, String> {
+        let config = Rc::new(RefCell::new(config));
+        let conf = config.borrow();
+        let content_screen = Rc::new(Screen::new(
             params.selector.as_str(),
+            Rc::clone(&config),
+            Rc::clone(&client_caps),
+            format!("display: block; width: 100%; height: 100%").as_str(),
+        )?);
+        let control_screen = Rc::new(Screen::new(
+            params.selector.as_str(),
+            Rc::clone(&config),
             Rc::clone(&client_caps),
             format!(
-                "display: block; width: 100%; height: {:.1}%",
-                config.layout_content_height
-            )
-            .as_str(),
-        )?;
-        let tooltip_screen = Screen::new(
-            params.selector.as_str(),
-            Rc::clone(&client_caps),
-            format!(
-                "display: block; width: 100%; height: {:.1}%; position: absolute; left: 0; top: 0; {}; {}",
-                config.layout_content_height,
+                "display: block; width: 100%; height: 100%; position: absolute; left: 0; top: 0; {}; {}",
                 CSS_DISABLE_DEFAULT_LONG_TOUCH,
                 CSS_DISABLE_TOUCH_GESTURES,
             )
             .as_str(),
-        )?;
-        let preview_screen = Screen::new(
-            params.selector.as_str(),
-            Rc::clone(&client_caps),
-            format!(
-                "display: block; width: 100%; height: {:.1}%",
-                config.layout_preview_height
-            )
-            .as_str(),
-        )?;
-        let camera_grip_screen = Screen::new(
-            params.selector.as_str(),
-            Rc::clone(&client_caps),
-            format!(
-                "display: block; width: 100%; height: {:.1}%; position: absolute; left: 0; top: {:.1}%; {}; {}",
-                config.layout_preview_height, config.layout_content_height, CSS_DISABLE_DEFAULT_LONG_TOUCH, CSS_DISABLE_TOUCH_GESTURES
-            )
-            .as_str(),
-        )?;
-        let legend_screen = Screen::new(
-            params.selector.as_str(),
-            Rc::clone(&client_caps),
-            format!(
-                "display: block; width: 100%; height: {:.0}%; {}",
-                config.layout_legend_height, CSS_DISABLE_DEFAULT_LONG_TOUCH
-            )
-            .as_str(),
-        )?;
+        )?);
 
-        let coord_ticks_height = get_tick_height(config.as_ref(), config.font_size_small);
-        let value_ticks_width = get_tick_width(
-            config.as_ref(),
-            config.font_size_small,
-            params.content.value_short_verbose_len,
-        );
-        let main_camera_padding = [5.0, 0.0, coord_ticks_height, value_ticks_width];
-        let preview_camera_padding = [0.0, main_camera_padding[1], 0.0, main_camera_padding[3]];
+        let content_padding = Padding::new([
+            Size::Pct(0.0),
+            Size::Pct(0.0),
+            Size::Pct(conf.layout_preview_height + conf.layout_legend_height),
+            Size::Pct(0.0),
+        ]);
+        let preview_padding = Padding::new([
+            Size::Pct(conf.layout_content_height),
+            Size::Pct(0.0),
+            Size::Pct(conf.layout_legend_height),
+            Size::Pct(0.0),
+        ]);
+        let legend_padding = Padding::new([
+            Size::Pct(conf.layout_content_height + conf.layout_preview_height),
+            Size::Pct(0.0),
+            Size::Pct(0.0),
+            Size::Pct(0.0),
+        ]);
 
-        let main_camera = Camera::new(
+        let camera = Camera::new(
             Rc::clone(&config),
+            Rc::clone(&client_caps),
+            ScreenArea::new(Rc::clone(&content_screen), content_padding.clone()),
+            ScreenArea::new(Rc::clone(&control_screen), content_padding),
             main_scale,
-            coord_ticks_height,
-            value_ticks_width,
+            Tooltip::new(Rc::clone(&config)),
             &mut params.content,
-            &main_screen,
-            main_camera_padding,
         );
-        let preview_camera = Camera::new(
+
+        let preview = Preview::new(
             Rc::clone(&config),
+            Rc::clone(&client_caps),
+            ScreenArea::new(Rc::clone(&content_screen), preview_padding.clone())
+                .sub_area(camera.content_padding.clone()),
+            ScreenArea::new(Rc::clone(&control_screen), preview_padding)
+                .sub_area(camera.content_padding.clone()),
             preview_scale,
-            0.0,
-            0.0,
             &mut params.content,
-            &preview_screen,
-            preview_camera_padding,
         );
-        let legend = Legend::from_content(Rc::clone(&config), &params.content, &main_screen);
-        let tooltip = Tooltip::new(Rc::clone(&config));
-        let chart = MainChart {
+
+        let legend = Legend::new(
+            Rc::clone(&config),
+            ScreenArea::new(Rc::clone(&control_screen), legend_padding)
+                .sub_area(camera.content_padding.clone()),
+        );
+
+        let mut chart = Box::pin(Self {
             container_selector: params.selector.clone(),
-            client_caps,
-            config,
+            client_caps: Rc::clone(&client_caps),
+            config: Rc::clone(&config),
             content: params.content,
-            pointer_position: None,
-            main_camera,
-            main_screen,
-            tooltip,
-            tooltip_pointer_down_position: None,
-            tooltip_pinch_coords: None,
-            tooltip_screen,
-            preview_camera,
-            preview_screen,
-            camera_grip_x_offset: None,
-            // TODO rename mouse to pointer
-            camera_grip_pointer_down_position: None,
-            camera_grip_screen,
-            legend_screen,
+            content_screen,
+            control_screen,
+            preview,
+            camera,
             legend,
-            legend_pointer_down_position: None,
-            legend_pointer_down_time_us: None,
-            zoomed_in: false,
             dirty: true,
-        };
+            control_watcher: Rc::new(RefCell::new(if touch_device {
+                Box::new(TouchControls::new())
+            } else {
+                Box::new(MouseControls::new())
+            })),
+            touch_device,
+            pointer_move: None,
+            pointer_out: None,
+            pointer_down: None,
+            pointer_up: None,
+            animation_frame_requested: false,
+            request_animation_frame_closure: None,
+            _pin: PhantomPinned,
+        });
+        Self::ensure_listeners_are_set_up(chart.as_mut());
         Ok(chart)
     }
-
-    fn zoom_out(&mut self, time_us: f64) {
-        self.dirty = true;
-        self.zoomed_in = false;
-        let screen_area = self
-            .preview_camera
-            .get_content_screen_area(self.preview_camera.scale_time_us);
-        self.main_camera.zoom_by_coords(
-            &mut self.content,
-            screen_area.scale.get_coord_min(),
-            screen_area.scale.get_coord_max(),
-            Some(time_us),
-        );
+    pub fn get_time_us() -> f64 {
+        web_sys::window().unwrap().performance().unwrap().now() * 1000.0
     }
-    fn try_to_grab_camera_grip(&mut self, time_us: f64) {
-        self.dirty = true;
-        if let Some((x, _)) = self.pointer_position {
-            let screen_area = self
-                .preview_camera
-                .get_content_screen_area(self.preview_camera.scale_time_us);
-            if let Some(mouse_coord) = screen_area.x_to_coord(x) {
-                let grip_coord = self.main_camera.coord.get_value(time_us);
-                let grip_coord_half_range = self.main_camera.coord_range.get_value(time_us) * 0.5;
-                if mouse_coord >= grip_coord - grip_coord_half_range
-                    && mouse_coord <= grip_coord + grip_coord_half_range
-                {
-                    self.camera_grip_x_offset = Some(x - screen_area.coord_to_x(grip_coord));
+    fn ensure_listeners_are_set_up(mut self: Pin<&mut Self>) {
+        let control_screen_event_target = self
+            .control_screen
+            .canvas
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .clone();
+        let is_touch_device = self.touch_device;
+        let chart = unsafe { Pin::into_inner_unchecked(self.as_mut()) };
+        let chart_ptr = chart as *mut Self as usize;
+
+        chart.pointer_down = Some(JsEventListener::new(
+            control_screen_event_target.clone(),
+            if is_touch_device {
+                "touchstart"
+            } else {
+                "mousedown"
+            },
+            Box::new(move |event: JsValue| {
+                let mut obj = Box::into_pin(unsafe { Box::from_raw(chart_ptr as *mut Self) });
+                let chart = unsafe { Pin::into_inner_unchecked(obj.as_mut()) };
+                let event = chart.control_watcher.borrow_mut().down(&event);
+                if let Some(control_event) = event {
+                    let time_us = Self::get_time_us();
+                    chart.on_control_event(&control_event, time_us);
+                    chart.request_animation_frame();
                 }
-            }
-        }
-    }
-
-    fn drag_main_camera(&mut self, time_us: f64) {
-        self.dirty = true;
-        if let (Some((mouse_x, _)), Some(x_offset)) =
-            (self.pointer_position, self.camera_grip_x_offset)
-        {
-            let screen_area = self
-                .preview_camera
-                .get_content_screen_area(self.preview_camera.scale_time_us);
-            if let Some(new_grip_coord) = screen_area.x_to_coord(mouse_x - x_offset) {
-                let half_range = self.main_camera.coord_range.get_end_value() * 0.5;
-                let coord_min = screen_area.scale.get_coord_min();
-                let coord_max = screen_area.scale.get_coord_max();
-
-                let new_camera_coord = if new_grip_coord - half_range < coord_min {
-                    coord_min + half_range
-                } else if new_grip_coord + half_range > coord_max {
-                    coord_max - half_range
-                } else {
-                    new_grip_coord
-                };
-
-                if new_camera_coord != self.main_camera.coord.get_end_value() {
-                    self.main_camera
-                        .move_to(&mut self.content, new_camera_coord, Some(time_us));
+                Box::into_raw(unsafe { Pin::into_inner_unchecked(obj) });
+            }),
+        ));
+        chart.pointer_up = Some(JsEventListener::new(
+            control_screen_event_target.clone(),
+            if is_touch_device {
+                "touchend"
+            } else {
+                "mouseup"
+            },
+            Box::new(move |event: JsValue| {
+                let mut obj = Box::into_pin(unsafe { Box::from_raw(chart_ptr as *mut Self) });
+                let chart = unsafe { Pin::into_inner_unchecked(obj.as_mut()) };
+                let event = chart.control_watcher.borrow_mut().up(&event);
+                if let Some(control_event) = event {
+                    let time_us = Self::get_time_us();
+                    chart.on_control_event(&control_event, time_us);
+                    chart.request_animation_frame();
                 }
-            }
-        }
-    }
-
-    fn toggle_data_set(&mut self, index: usize, time_us: f64) -> Result<(), String> {
-        self.dirty = true;
-        let number_of_data_sets = self.content.data_sets.len();
-        if index >= number_of_data_sets {
-            return Err(format!(
-                "chart contains {number_of_data_sets} data sets; index is out of bound"
-            ));
-        }
-        let is_visible = self.content.data_sets[index].alpha.get_end_value() == 1.0;
-        if is_visible
-            && self
-                .content
-                .data_sets
-                .iter()
-                .filter(|data_set| data_set.alpha.get_end_value() == 1.0)
-                .count()
-                == 1
-        {
-            for (index_, data_set) in self.content.data_sets.iter_mut().enumerate() {
-                if index_ != index {
-                    data_set.alpha.set_value(1.0, Some(time_us));
+                Box::into_raw(unsafe { Pin::into_inner_unchecked(obj) });
+            }),
+        ));
+        chart.pointer_move = Some(JsEventListener::new(
+            control_screen_event_target.clone(),
+            if is_touch_device {
+                "touchmove"
+            } else {
+                "mousemove"
+            },
+            Box::new(move |event: JsValue| {
+                let mut obj = Box::into_pin(unsafe { Box::from_raw(chart_ptr as *mut Self) });
+                let chart = unsafe { Pin::into_inner_unchecked(obj.as_mut()) };
+                let event = chart.control_watcher.borrow_mut().moved(&event);
+                if let Some(control_event) = event {
+                    let time_us = Self::get_time_us();
+                    chart.on_control_event(&control_event, time_us);
+                    chart.request_animation_frame();
                 }
-            }
-        } else {
-            let alpha = &mut self.content.data_sets[index].alpha;
-            alpha.set_value(1.0 - alpha.get_end_value(), Some(time_us));
+                Box::into_raw(unsafe { Pin::into_inner_unchecked(obj) });
+            }),
+        ));
+        chart.pointer_out = Some(JsEventListener::new(
+            control_screen_event_target.clone(),
+            if is_touch_device {
+                "touchcancel"
+            } else {
+                "mouseout"
+            },
+            Box::new(move |event: JsValue| {
+                let mut obj = Box::into_pin(unsafe { Box::from_raw(chart_ptr as *mut Self) });
+                let chart = unsafe { Pin::into_inner_unchecked(obj.as_mut()) };
+                let event = chart.control_watcher.borrow_mut().left(&event);
+                if let Some(control_event) = event {
+                    let time_us = Self::get_time_us();
+                    chart.on_control_event(&control_event, time_us);
+                    chart.request_animation_frame();
+                }
+                Box::into_raw(unsafe { Pin::into_inner_unchecked(obj) });
+            }),
+        ));
+        if chart.request_animation_frame_closure.is_none() {
+            let closure = Closure::new(Box::new(move |time_ms: JsValue| {
+                let time_us = time_ms.as_f64().unwrap() * 1000.0;
+                let mut obj = Box::into_pin(unsafe { Box::from_raw(chart_ptr as *mut Self) });
+                let chart = unsafe { Pin::into_inner_unchecked(obj.as_mut()) };
+                chart.animation_frame_requested = false;
+                chart.draw(time_us);
+                Box::into_raw(unsafe { Pin::into_inner_unchecked(obj) });
+            }));
+            chart.request_animation_frame_closure = Some(closure);
         }
-        self.update_cameras(time_us);
-        Ok(())
+        chart.request_animation_frame();
     }
-    fn update_cameras(&mut self, time_us: f64) {
-        let coord = self.main_camera.coord.get_end_value();
-        let coord_half_range = self.main_camera.coord_range.get_end_value() * 0.5;
-        self.main_camera.zoom_by_coords(
-            &mut self.content,
-            coord - coord_half_range,
-            coord + coord_half_range,
-            Some(time_us),
-        );
-        self.preview_camera.update_by_content(
-            &mut self.content,
-            Some(time_us),
-        );
-    }
-    fn handle_legend_click(&mut self, x: f64, y: f64, time_us: f64) {
-        self.dirty = true;
-        let mut clicked_index: Option<usize> = None;
-        let cx = self.legend_screen.x_to_cx(x);
-        let cy = self.legend_screen.y_to_cy(y);
-        for (index, position) in self.legend.positions.iter().enumerate() {
-            if position.contains(cx, cy) {
-                clicked_index = Some(index);
-                break;
-            }
-        }
-        if let Some(index) = clicked_index {
-            self.toggle_data_set(self.legend.offset + index, time_us)
+    fn request_animation_frame(&mut self) {
+        if !self.animation_frame_requested {
+            web_sys::window()
+                .unwrap()
+                .request_animation_frame(
+                    self.request_animation_frame_closure
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unchecked_ref(),
+                )
                 .unwrap();
-        }
-        if let Some(arrow_left) = &self.legend.arrow_left {
-            if arrow_left.contains(cx, cy) {
-                self.dirty = true;
-                self.legend.prev_page();
-            }
-        }
-        if let Some(arrow_right) = &self.legend.arrow_right {
-            if arrow_right.contains(cx, cy) {
-                self.dirty = true;
-                self.legend.next_page();
-            }
-        }
-    }
-    fn check_legend_long_press(&mut self, time_us: f64) -> usize {
-        if let Some(legend_pointer_down_time_us) = &self.legend_pointer_down_time_us {
-            if time_us - *legend_pointer_down_time_us > self.config.us_long_press
-                && is_click(&self.legend_pointer_down_position, &self.pointer_position)
-            {
-                let (x, y) = self.legend_pointer_down_position.as_ref().unwrap();
-
-                let mut clicked_index: Option<usize> = None;
-                let cx = self.legend_screen.x_to_cx(*x);
-                let cy = self.legend_screen.y_to_cy(*y);
-                for (index, position) in self.legend.positions.iter().enumerate() {
-                    if position.contains(cx, cy) {
-                        clicked_index = Some(index);
-                        break;
-                    }
-                }
-                if let Some(index) = clicked_index {
-                    let index_to_show = index + self.legend.offset;
-                    for (index, data_set) in self.content.data_sets.iter_mut().enumerate() {
-                        data_set.alpha.set_value(
-                            if index == index_to_show { 1.0 } else { 0.0 },
-                            Some(time_us),
-                        );
-                    }
-                    self.update_cameras(time_us);
-                    self.dirty = true;
-                    self.legend_pointer_down_position = None;
-                    self.legend_pointer_down_time_us = None;
-                }
-            }
-            1
-        } else {
-            0
+            self.animation_frame_requested = true;
         }
     }
 
-    fn zoom_by_coords(&mut self, left_coord: f64, right_coord: f64, time_us: f64) {
-        self.dirty = true;
-        self.zoomed_in = true;
-        self.main_camera
-            .zoom_by_coords(&mut self.content, left_coord, right_coord, Some(time_us));
+    fn drag_camera(&mut self, time_us: f64) {
+        if let (Some(pos), Some(grip_hold_coord_offset)) =
+            (&self.preview.pointer, self.preview.grip_hold_coord_offset)
+        {
+            let preview_coord_space = self.preview.control_coord_space.get_handle(time_us);
+            if let Some(coord) = preview_coord_space.get_coord(pos) {
+                self.camera
+                    .move_to(&mut self.content, grip_hold_coord_offset + coord, time_us);
+            }
+        }
     }
-    fn get_selected_coords(
-        &mut self,
-        is_main_screen: bool,
-        mouse_x1: f64,
-        mouse_x2: f64,
+
+    fn calc_selected_coords(
+        &self,
+        coord_space_handle: CoordSpaceHandle<T>,
+        pos1: &ScreenPos,
+        pos2: &ScreenPos,
     ) -> Option<(f64, f64)> {
-        let screen_area = if is_main_screen {
-            self.main_camera
-                .get_content_screen_area(self.main_camera.scale_time_us)
+        let screen_area_handle = coord_space_handle.screen_area_handle.as_ref();
+        let (pos_left, pos_right) = if pos1.0 < pos2.0 {
+            (pos1, pos2)
         } else {
-            self.preview_camera
-                .get_content_screen_area(self.preview_camera.scale_time_us)
+            (pos2, pos1)
         };
+        if screen_area_handle.get_cx(pos1) >= screen_area_handle.right_cx()
+            || screen_area_handle.get_cx(pos2) <= screen_area_handle.left_cx()
+        {
+            None
+        } else {
+            let left_coord = coord_space_handle
+                .get_coord(pos_left)
+                .unwrap_or_else(|| coord_space_handle.scale.get_coord_min());
 
-        let left_x = mouse_x1
-            .min(mouse_x2)
-            .max(screen_area.coord_to_x(screen_area.scale.get_coord_min()));
-        let right_x = mouse_x1
-            .max(mouse_x2)
-            .min(screen_area.coord_to_x(screen_area.scale.get_coord_max()));
-        match (
-            screen_area.x_to_coord(left_x),
-            screen_area.x_to_coord(right_x),
-        ) {
-            (Some(left_coord), Some(right_coord)) => Some((left_coord, right_coord)),
-            _ => None,
+            let right_coord = coord_space_handle
+                .get_coord(pos_right)
+                .unwrap_or_else(|| coord_space_handle.scale.get_coord_max());
+            Some((left_coord, right_coord))
         }
+    }
+    pub fn get_selected_coords(&mut self, time_us: f64) -> Option<(f64, f64)> {
+        let mut selected_coords: Option<(f64, f64)> = None;
+        if self.camera.pointer_down.is_some() {
+            let handle = self.camera.coord_space.get_handle(time_us);
+            if let (Some(down_pos), Some(pos)) = (&self.camera.pointer_down, &self.camera.pointer) {
+                selected_coords = self.calc_selected_coords(handle, down_pos, pos);
+            }
+        }
+        if self.preview.pointer_down.is_some() {
+            if let (Some(down_pos), Some(pos)) = (&self.preview.pointer_down, &self.preview.pointer)
+            {
+                let handle = self.preview.coord_space.get_handle(time_us);
+                selected_coords = self.calc_selected_coords(handle, down_pos, pos);
+            }
+        }
+        selected_coords
     }
     fn draw_selected_area(&mut self, time_us: f64) {
-        if let (Some(down_pos), Some(pos)) =
-            (self.tooltip_pointer_down_position, self.pointer_position)
-        {
-            if let Some((left_coord, right_coord)) =
-                self.get_selected_coords(true, down_pos.0, pos.0)
+        let selected_coords = self.get_selected_coords(time_us);
+        if let Some((left_coord, right_coord)) = selected_coords {
+            for coord_space in
+                [&mut self.camera.coord_space, &mut self.preview.coord_space].into_iter()
             {
-                let content_screen_area = self.main_camera.get_content_screen_area(time_us);
-                let preview_screen_area = self.preview_camera.get_content_screen_area(time_us);
-                let v = &self.config.color_camera_grip;
+                let coord_space_handle = coord_space.get_handle(time_us);
+                let coord_min = coord_space_handle.scale.get_coord_min();
+                let coord_max = coord_space_handle.scale.get_coord_max();
+
+                if left_coord >= coord_max || right_coord <= coord_min {
+                    continue;
+                }
+                let left_coord = left_coord.max(coord_min);
+                let right_coord = right_coord.min(coord_max);
+
+                let screen_area_handle = coord_space_handle.screen_area_handle.as_ref();
+                let crc = screen_area_handle.crc.as_ref();
+                let conf = self.config.borrow();
+                let v = conf.color_camera_grip;
                 let color =
                     JsValue::from_str(format!("rgba({}, {}, {}, {})", v.0, v.1, v.2, v.3).as_str());
-                let left_x = content_screen_area.get_cx(left_coord);
-                let right_x = content_screen_area.get_cx(right_coord);
-                let top_y = content_screen_area.top_cy();
-                let bottom_y = content_screen_area.bottom_cy();
-                let context = &self.tooltip_screen.context;
-                context.set_fill_style(&color);
-                context.fill_rect(left_x, top_y, right_x - left_x, bottom_y - top_y);
 
-                let left_x = preview_screen_area.get_cx(left_coord);
-                let right_x = preview_screen_area.get_cx(right_coord);
-                let top_y = preview_screen_area.top_cy();
-                let bottom_y = preview_screen_area.bottom_cy();
-                let context = &self.camera_grip_screen.context;
-                context.set_fill_style(&color);
-                context.fill_rect(left_x, top_y, right_x - left_x, bottom_y - top_y);
+                let left_x = coord_space_handle.get_cx(left_coord);
+                let right_x = coord_space_handle.get_cx(right_coord);
+                let top_y = screen_area_handle.top_cy();
+                let bottom_y = screen_area_handle.bottom_cy();
+                crc.set_fill_style(&color);
+                crc.fill_rect(left_x, top_y, right_x - left_x, bottom_y - top_y);
             }
-            return;
         }
+    }
+    fn camera_pointer_up(&mut self, time_us: f64) {
+        if let Some((left_coord, right_coord)) = self.get_selected_coords(time_us) {
+            self.camera
+                .zoom_by_coords(&mut self.content, left_coord, right_coord, time_us);
+        }
+        self.camera.pointer_down = None;
+        self.camera.pointer_down_time_us = None;
+    }
+    fn preview_pointer_up(&mut self, time_us: f64) {
+        if self.preview.grip_hold_coord_offset.is_none() {
+            if let Some((left_coord, right_coord)) = self.get_selected_coords(time_us) {
+                self.camera
+                    .zoom_by_coords(&mut self.content, left_coord, right_coord, time_us);
+            }
+        } else {
+            self.preview.grip_hold_coord_offset = None;
+        }
+        self.preview.pointer_down = None;
+        self.preview.pointer_down_time_us = None;
+    }
+    fn legend_pointer_up(&mut self, time_us: f64) {
+        self.legend.pointer_down = None;
+        self.legend.pointer_down_time_us = None;
+    }
+    fn try_to_grab_camera_grip(&mut self, time_us: f64) {
+        let camera_space = self.camera.control_coord_space.get_handle(time_us);
+        let camera_coord_min = camera_space.scale.get_coord_min();
+        let camera_coord_max = camera_space.scale.get_coord_max();
+        let grip_coord = (camera_coord_min + camera_coord_max) * 0.5;
 
-        if let (Some(down_pos), Some(pos)) = (
-            self.camera_grip_pointer_down_position,
-            self.pointer_position,
-        ) {
-            if let Some((left_coord, right_coord)) =
-                self.get_selected_coords(false, down_pos.0, pos.0)
-            {
-                let content_screen_area = self.main_camera.get_content_screen_area(time_us);
-                let preview_screen_area = self.preview_camera.get_content_screen_area(time_us);
-                let v = &self.config.color_camera_grip;
-                let color =
-                    JsValue::from_str(format!("rgba({}, {}, {}, {})", v.0, v.1, v.2, v.3).as_str());
-                let left_x = preview_screen_area.get_cx(left_coord);
-                let right_x = preview_screen_area.get_cx(right_coord);
-                let top_y = preview_screen_area.top_cy();
-                let bottom_y = preview_screen_area.bottom_cy();
-                let context = &self.camera_grip_screen.context;
-                context.set_fill_style(&color);
-                context.fill_rect(left_x, top_y, right_x - left_x, bottom_y - top_y);
-
-                if right_coord >= content_screen_area.scale.get_coord_min()
-                    && left_coord <= content_screen_area.scale.get_coord_max()
-                {
-                    let left_x = content_screen_area
-                        .get_cx(left_coord)
-                        .max(content_screen_area.left_cx());
-                    let right_x = content_screen_area
-                        .get_cx(right_coord)
-                        .min(content_screen_area.right_cx());
-                    let top_y = content_screen_area.top_cy();
-                    let bottom_y = content_screen_area.bottom_cy();
-                    let context = &self.tooltip_screen.context;
-                    context.set_fill_style(&color);
-                    context.fill_rect(left_x, top_y, right_x - left_x, bottom_y - top_y);
+        if let Some(pos) = self.preview.pointer.clone() {
+            let preview_space = self.preview.control_coord_space.get_handle(time_us);
+            if let Some(coord) = preview_space.get_coord(&pos) {
+                if coord <= camera_coord_max && coord >= camera_coord_min {
+                    self.preview.grip_hold_coord_offset = Some(grip_coord - coord);
                 }
             }
         }
@@ -457,231 +420,256 @@ where
     fn on_control_event(&mut self, event: &ControlEvent, time_us: f64) {
         match event {
             ControlEvent::PointerDown { pos } => {
-                self.pointer_position = Some(pos.clone());
-                if self.tooltip_screen.contains_pos(&pos) {
-                    self.tooltip_pointer_down_position = Some(pos.clone());
-                    self.dirty = true;
-                }
-                if self.camera_grip_screen.contains_pos(&pos) {
-                    self.camera_grip_pointer_down_position = Some(pos.clone());
-                    self.dirty = true;
-                    if self.zoomed_in {
-                        self.try_to_grab_camera_grip(time_us);
-                    }
-                }
-                if self.legend_screen.contains_pos(&pos) {
-                    self.legend_pointer_down_position = Some(pos.clone());
-                    self.legend_pointer_down_time_us = Some(time_us);
-                }
+                let hit_camera = self
+                    .camera
+                    .control_coord_space
+                    .screen_area
+                    .get_handle()
+                    .contains_pos(pos);
+                if hit_camera {
+                    self.camera.pointer = Some(pos.to_owned());
+                    self.camera.pointer_down = Some(pos.to_owned());
+                    self.camera.pointer_down_time_us = Some(time_us);
+                } else {
+                    let hit_preview = self
+                        .preview
+                        .control_coord_space
+                        .screen_area
+                        .get_handle()
+                        .contains_pos(pos);
+                    if hit_preview {
+                        self.preview.pointer = Some(pos.to_owned());
+                        self.preview.pointer_down = Some(pos.to_owned());
+                        self.preview.pointer_down_time_us = Some(time_us);
+                        if self.camera.zoomed_in {
+                            self.try_to_grab_camera_grip(time_us);
+                        }
+                    } else {
+                        let hit_legend = self
+                            .legend
+                            .control_screen_area
+                            .get_handle()
+                            .contains_pos(pos);
+                        if hit_legend {
+                            self.legend.pointer = Some(pos.to_owned());
+                            self.legend.pointer_down = Some(pos.to_owned());
+                            self.legend.pointer_down_time_us = Some(time_us);
+                        }
+                    };
+                };
             }
             ControlEvent::PointerMoved { pos } => {
-                self.pointer_position = Some(pos.clone());
-                if self.tooltip_pointer_down_position.is_some()
-                    || (self.tooltip_screen.contains_pos(&pos) || self.tooltip.visible)
-                        && self.tooltip.mouse_click_at.is_none()
-                {
-                    self.dirty = true;
-                }
-                if self.camera_grip_pointer_down_position.is_some() {
-                    self.dirty = true;
-                    if self.camera_grip_x_offset.is_some() {
-                        self.drag_main_camera(time_us);
+                let hit_camera = self
+                    .camera
+                    .control_coord_space
+                    .screen_area
+                    .get_handle()
+                    .contains_pos(pos);
+                if hit_camera {
+                    self.camera.pointer = Some(pos.to_owned());
+                } else {
+                    if self.camera.pointer_down.is_some() {
+                        self.camera_pointer_up(time_us);
                     }
+                    self.camera.pointer = None;
+
+                    let hit_preview = self
+                        .preview
+                        .control_coord_space
+                        .screen_area
+                        .get_handle()
+                        .contains_pos(pos);
+
+                    if hit_preview {
+                        self.preview.pointer = Some(pos.to_owned());
+                        if self.preview.pointer_down.is_some()
+                            && self.preview.grip_hold_coord_offset.is_some()
+                        {
+                            self.drag_camera(time_us);
+                        }
+                    } else {
+                        if self.preview.pointer_down.is_some() {
+                            self.preview_pointer_up(time_us);
+                        }
+                        self.preview.pointer = None;
+
+                        let hit_legend = self
+                            .legend
+                            .control_screen_area
+                            .get_handle()
+                            .contains_pos(pos);
+                        if hit_legend {
+                            self.legend.pointer = Some(pos.to_owned());
+                        } else {
+                            if self.legend.pointer_down.is_some() {
+                                self.legend_pointer_up(time_us);
+                            }
+                            self.legend.pointer = None;
+                        }
+                    };
                 }
             }
-            ControlEvent::PointerUp => {
-                if self.tooltip_pointer_down_position.is_some() {
-                    if is_click(&self.tooltip_pointer_down_position, &self.pointer_position) {
-                        self.tooltip.mouse_click_at = if self.tooltip.mouse_click_at.is_none() {
-                            self.pointer_position.clone()
-                        } else {
-                            None
-                        };
+            ControlEvent::PointerUp | ControlEvent::PointerLeft => {
+                if self.preview.pointer_down.is_some() {
+                    self.preview_pointer_up(time_us);
+                } else {
+                    if self.camera.pointer_down.is_some() {
+                        self.camera_pointer_up(time_us);
                     } else {
-                        // MOUSE UP AFTER DRAGGING
-                        match (self.tooltip_pointer_down_position, self.pointer_position) {
-                            (Some(down_pos), Some(pos)) => {
-                                if let Some((left_coord, right_coord)) =
-                                    self.get_selected_coords(true, down_pos.0, pos.0)
-                                {
-                                    self.zoom_by_coords(left_coord, right_coord, time_us);
-                                }
-                            }
-                            _ => {}
+                        if self.legend.pointer_down.is_some() {
+                            self.legend_pointer_up(time_us);
                         }
                     }
-                    self.tooltip_pointer_down_position = None;
-                    self.dirty = true;
                 }
-
-                if self.camera_grip_pointer_down_position.is_some() {
-                    if is_click(
-                        &self.camera_grip_pointer_down_position,
-                        &self.pointer_position,
-                    ) {
-                        self.zoom_out(time_us);
-                    } else if self.camera_grip_x_offset.is_none() {
-                        if let (Some(down_pos), Some(pos)) = (
-                            self.camera_grip_pointer_down_position,
-                            self.pointer_position,
-                        ) {
-                            if let Some((left_coord, right_coord)) =
-                                self.get_selected_coords(false, down_pos.0, pos.0)
-                            {
-                                self.zoom_by_coords(left_coord, right_coord, time_us);
+                self.camera.pointer = None;
+                self.preview.pointer = None;
+                self.legend.pointer = None;
+            }
+            ControlEvent::PointerClicked => {
+                if self.preview.pointer_down.is_some() {
+                    if self.camera.zoomed_in {
+                        self.camera.zoom_out(&mut self.content, time_us);
+                    }
+                    self.preview.pointer_down = None;
+                    self.preview.pointer_down_time_us = None;
+                    self.preview.grip_hold_coord_offset = None;
+                } else {
+                    if self.camera.pointer_down.is_some() {
+                        if self.camera.pointer_clicked.is_some() {
+                            self.camera.pointer_clicked = None;
+                            self.camera.pointer_clicked_time_us = None;
+                        } else {
+                            self.camera.pointer_clicked = self.camera.pointer.clone();
+                            self.camera.pointer_clicked_time_us = Some(time_us);
+                        }
+                        self.camera.pointer_down = None;
+                        self.camera.pointer_down_time_us = None;
+                    } else {
+                        if self.legend.pointer_down.is_some() {
+                            if self.legend.on_click(&mut self.content, time_us) {
+                                self.camera.zoom_by_coords(
+                                    &mut self.content,
+                                    self.camera.control_coord_space.coord_min.get_end_value(),
+                                    self.camera.control_coord_space.coord_max.get_end_value(),
+                                    time_us,
+                                );
+                                self.preview
+                                    .update_by_content(&mut self.content, Some(time_us));
                             }
+                            self.legend.pointer_down = None;
+                            self.legend.pointer_down_time_us = None;
                         }
                     }
-                    self.camera_grip_pointer_down_position = None;
-                    self.camera_grip_x_offset = None;
-                    self.dirty = true;
-                }
-
-                if self.legend_pointer_down_position.is_some() {
-                    if is_click(&self.legend_pointer_down_position, &self.pointer_position) {
-                        let pos = self.legend_pointer_down_position.as_ref().unwrap();
-                        self.handle_legend_click(pos.0, pos.1, time_us);
-                    }
-                    self.legend_pointer_down_position = None;
-                    self.legend_pointer_down_time_us = None;
                 }
             }
             ControlEvent::PinchStarted { pos1, pos2 } => {
-                if self.tooltip_screen.contains_pos(pos1)
-                    && self.tooltip_screen.contains_pos(pos2)
+                if self.preview.pointer_down.is_some() {
+                    self.preview_pointer_up(time_us);
+                } else {
+                    if self.camera.pointer_down.is_some() {
+                        self.camera_pointer_up(time_us);
+                    } else {
+                        if self.legend.pointer_down.is_some() {
+                            self.legend_pointer_up(time_us);
+                        }
+                    }
+                }
+                self.camera.pointer = None;
+                self.preview.pointer = None;
+                self.legend.pointer = None;
+
+                let camera_coord_space_handle = self.camera.control_coord_space.get_handle(time_us);
+                let camera_screen_area_handle =
+                    camera_coord_space_handle.screen_area_handle.as_ref();
+                if camera_screen_area_handle.contains_pos(pos1)
+                    && camera_screen_area_handle.contains_pos(pos2)
                     && pos1.0 != pos2.0
                 {
-                    self.tooltip_pointer_down_position = None;
-                    let main_screen_area = self
-                        .main_camera
-                        .get_content_screen_area(self.main_camera.scale_time_us);
-                    match (
-                        main_screen_area.x_to_coord(pos1.0),
-                        main_screen_area.x_to_coord(pos2.0),
+                    if let (Some(coord1), Some(coord2)) = (
+                        camera_coord_space_handle.get_coord(pos1),
+                        camera_coord_space_handle.get_coord(pos2),
                     ) {
-                        (Some(coord_1), Some(coord_2)) => {
-                            self.tooltip_pinch_coords = if coord_1 < coord_2 {
-                                Some((coord_1, coord_2))
-                            } else {
-                                Some((coord_2, coord_1))
-                            };
-                        }
-                        _ => (),
+                        self.camera.pinch_coords = Some(if coord1 < coord2 {
+                            (coord1, coord2)
+                        } else {
+                            (coord2, coord1)
+                        });
                     }
+
+                    self.camera.pinch_coords;
+                    self.camera.pointer_down = None;
+                    self.camera.pointer_down_time_us = None;
                 }
             }
             ControlEvent::PinchUpdated { pos1, pos2 } => {
-                if pos1.0 != pos2.0 {
-                    if let Some((coord_1, coord_2)) = self.tooltip_pinch_coords {
-                        let main_screen_area = self
-                            .main_camera
-                            .get_content_screen_area(self.main_camera.scale_time_us);
+                if pos1.0 == pos2.0 {
+                    return;
+                }
+                let camera_coord_space_handle = self.camera.control_coord_space.get_handle(time_us);
+                let camera_screen_area_handle =
+                    camera_coord_space_handle.screen_area_handle.as_ref();
+                if let Some((coord_1, coord_2)) = self.camera.pinch_coords.as_ref() {
+                    let coord_min = self.camera.global_scale.get_coord_min();
+                    let coord_max = self.camera.global_scale.get_coord_max();
 
-                        let coord_min = main_screen_area.global_scale.get_coord_min();
-                        let coord_max = main_screen_area.global_scale.get_coord_max();
+                    let left_portion =
+                        camera_screen_area_handle.get_cx(if pos1.0 < pos2.0 { pos1 } else { pos2 })
+                            / camera_screen_area_handle.canvas_content_width;
+                    let right_portion =
+                        camera_screen_area_handle.get_cx(if pos1.0 > pos2.0 { pos1 } else { pos2 })
+                            / camera_screen_area_handle.canvas_content_width;
 
-                        let left_cx = main_screen_area.left_cx();
+                    let coord_to_portion = (coord_2 - coord_1) / (right_portion - left_portion);
 
-                        let pos1_x_portion = (main_screen_area.x_to_cx(pos1.0.min(pos2.0))
-                            - left_cx)
-                            / main_screen_area.canvas_content_width;
-                        let pos2_x_portion = (main_screen_area.x_to_cx(pos1.0.max(pos2.0))
-                            - left_cx)
-                            / main_screen_area.canvas_content_width;
+                    let new_camera_left_coord =
+                        ((0.0 - left_portion) * coord_to_portion + coord_1).max(coord_min);
+                    let new_camera_right_coord =
+                        ((1.0 - right_portion) * coord_to_portion + coord_2).min(coord_max);
 
-                        let coord_to_portion =
-                            (coord_2 - coord_1) / (pos2_x_portion - pos1_x_portion);
-
-                        let new_camera_left_coord =
-                            ((0.0 - pos1_x_portion) * coord_to_portion + coord_1).max(coord_min);
-                        let new_camera_right_coord =
-                            ((1.0 - pos2_x_portion) * coord_to_portion + coord_2).min(coord_max);
-
-                        self.zoom_by_coords(new_camera_left_coord, new_camera_right_coord, time_us);
-
-                        if new_camera_left_coord == coord_min && new_camera_right_coord == coord_max
-                        {
-                            self.zoomed_in = false;
-                        }
-                    }
+                    self.camera.zoom_by_coords(
+                        &mut self.content,
+                        new_camera_left_coord,
+                        new_camera_right_coord,
+                        time_us,
+                    );
                 }
             }
             ControlEvent::PinchFinished => {
-                if self.tooltip_pinch_coords.is_some() {
-                    self.tooltip_pinch_coords = None;
-                }
+                self.camera.pinch_coords = None;
             }
         }
     }
-    fn on_resize(&mut self) {
-        self.dirty = true;
-        self.main_camera.dirty = true;
-        self.preview_camera.dirty = true;
-        self.main_screen.schedule_canvas_size_sync();
-        self.tooltip_screen.schedule_canvas_size_sync();
-        self.preview_screen.schedule_canvas_size_sync();
-        self.camera_grip_screen.schedule_canvas_size_sync();
-        self.legend_screen.schedule_canvas_size_sync();
-    }
-    fn draw(&mut self, time_us: f64) -> usize {
-        let mut actions: usize = 0;
-        actions += self.check_legend_long_press(time_us);
-        if !self.dirty {
-            return actions;
-        }
-        actions += 1;
-        // console_debug!("DRAWING");
+    fn draw(&mut self, time_us: f64) {
         ANIMATED_NUMBERS_COUNT.store(0, Ordering::Relaxed);
+        self.legend.on_long_press(&mut self.content, time_us);
+        self.content_screen.clear();
+        self.control_screen.clear();
 
-        // cameras sync their own screens themselves
-        self.tooltip_screen.sync_canvas_size();
-        self.camera_grip_screen.sync_canvas_size();
-        self.legend_screen.sync_canvas_size();
-
-        self.main_camera
-            .shoot(&mut self.content, &mut self.main_screen, time_us);
-
-        self.preview_camera
-            .shoot(&mut self.content, &mut self.preview_screen, time_us);
-        self.main_camera.draw_grip(
-            &mut self.camera_grip_screen,
-            self.preview_camera.get_content_screen_area(time_us),
-            self.zoomed_in,
-            self.camera_grip_x_offset.is_some(),
-            time_us,
-        );
-
-        self.tooltip_screen.clear();
-        if self.camera_grip_x_offset.is_none() {
+        self.camera.draw(&mut self.content, time_us);
+        self.preview.draw(&mut self.content, time_us);
+        let grip = if self.camera.zoomed_in {
+            let coord_min = self.camera.control_coord_space.coord_min.get_end_value();
+            let coord_max = self.camera.control_coord_space.coord_max.get_end_value();
+            Some(((coord_min + coord_max) * 0.5, coord_max - coord_min))
+        } else {
+            None
+        };
+        self.preview.draw_grip(grip, time_us);
+        if self.preview.grip_hold_coord_offset.is_none() {
             self.draw_selected_area(time_us);
         }
-        self.tooltip.draw(
-            &mut self.content,
-            &mut self.tooltip_screen,
-            self.main_camera.get_content_screen_area(time_us),
-            if self.client_caps.borrow().touch_device {
-                &None
-            } else {
-                &self.pointer_position
-            },
-            time_us,
-        );
+        self.legend.draw(&self.content);
 
-        let content_screen_area = self.main_camera.get_content_screen_area(time_us);
-        self.legend.resize(
-            &self.legend_screen,
-            content_screen_area.left_cx(),
-            content_screen_area.right_cx(),
-            0.0,
-            self.legend_screen.canvas_height,
-        );
-        self.legend
-            .draw(&mut self.content, &mut self.legend_screen, time_us);
-
-        if ANIMATED_NUMBERS_COUNT.load(Ordering::Relaxed) == 0 {
-            self.dirty = false;
+        if ANIMATED_NUMBERS_COUNT.load(Ordering::Relaxed) > 0
+            || self.legend.pointer_down_time_us.is_some()
+        {
+            self.request_animation_frame();
         }
-        actions
+    }
+    fn on_resize(&mut self) {
+        self.content_screen.schedule_canvas_size_sync();
+        self.control_screen.schedule_canvas_size_sync();
+        self.request_animation_frame();
     }
 }
 
