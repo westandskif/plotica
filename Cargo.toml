@@ -1,8 +1,10 @@
 [package]
-name = "graphima"
-version = "0.1.0"
+name = "plotica"
+version = "0.1.1"
 edition = "2021"
 license = "MPL-2.0"
+repository = "https://github.com/westandskif/plotica"
+description = "wasm-based chart drawing library"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,12 +16,15 @@ crate-type = ["cdylib"]
 lto = true
 opt-level = 'z'
 panic = 'abort'
+strip = true
 
 [dependencies]
 wasm-bindgen = "*"
 js-sys = "*"
-thiserror = "1"
-chrono = "0.4.24"
+thiserror = "*"
+chrono = "*"
+wee_alloc = "*"
+
 
 [dependencies.web-sys]
 version = "*"

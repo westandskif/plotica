@@ -181,7 +181,7 @@ where
             crc.set_text_baseline("bottom");
             crc.set_text_align("right");
             crc.fill_text(
-                "© Graphima",
+                "© Plotica",
                 right_x - font_cpx_size,
                 bottom_y - font_cpx_size * 0.5,
             )

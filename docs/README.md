@@ -5,7 +5,7 @@
 ![Image title](images/logo-black.png){ align=left width=128}
 
 <p style="text-align: left">
-<strong>Graphima</strong> (<i>Greek: γράφημα</i>) is an attempt to build
+<strong>Plotica</strong> is an attempt to build
 full-featured WebAssembly-based monolith charts.
 <br/>
 See <a href="https://caniuse.com/wasm">"Can I Use" WebAssembly</a> for browser
@@ -25,8 +25,7 @@ support.
 1. click the only selected legend item to select all
 
 <div id="chart-1" style="width: 100%; height: 60vh; margin: 0"></div>
-<script src="dist/index-iife.js"></script>
-<script src="readme.js"></script>
+<script type="module" src="readme.js"></script>
 
 #### Nice bits
 
@@ -39,28 +38,14 @@ support.
 
 ## Installation
 
-[graphima on npmjs.com](https://www.npmjs.com/package/graphima)
-
-#### As IIFE module
-
-`iife` module (_Immediate Invoked Function Expression_) makes it available as
-`window.Graphima`.
-
-```js title="in index.html above your app code"
---8<-- "docs/import-iife.html"
-```
-
-#### As ESM module
-
-Run `npm i graphima` and then use a bundler of your choice (e.g.
-[Rollup](https://rollupjs.org)):
-
-```js
---8<-- "docs/import-es.js"
-```
+Run `npm i plotica` ([plotica on
+npmjs.com](https://www.npmjs.com/package/plotica)) and then use a bundler of
+your choice.
 
 ## Code of the chart above
 
 ```js
---8<-- "docs/readme.js"
+import init, { createMain } from "plotica";
+
+--8<-- "docs/readme.js:main"
 ```

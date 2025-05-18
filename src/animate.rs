@@ -22,7 +22,7 @@ pub struct AnimatedNumber {
 }
 impl AnimatedNumber {
     pub fn new(initial_value: f64) -> Self {
-        Self::custom(initial_value, 100000.0, 200000.0)
+        Self::custom(initial_value, 100000.0, 100000.0)
     }
     pub fn custom(initial_value: f64, dt1_us: f64, dt2_us: f64) -> Self {
         Self {

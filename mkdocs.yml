@@ -1,4 +1,4 @@
-site_name: graphima
+site_name: plotica
 theme:
   logo: images/logo-white.png
   favicon: images/favicon.png
@@ -13,8 +13,8 @@ theme:
 hooks:
   - docs/own_hooks.py
 
-repo_name: westandskif/graphima
-repo_url: https://github.com/westandskif/graphima
+repo_name: westandskif/plotica
+repo_url: https://github.com/westandskif/plotica
 
 nav:
   - Main chart:
@@ -22,10 +22,10 @@ nav:
      - Reference: main/reference.md
      - More examples: main/more-examples.md
        # - Themes: main/themes.md
-     - Coming soon: main/coming-soon.md
+       # - Coming soon: main/coming-soon.md
   - Changelog: CHANGELOG.md
   - License: LICENSE.md
-  - Sponsor this project: sponsor-project.md
+  - Support this project: support-project.md
 
 markdown_extensions:
   - toc:

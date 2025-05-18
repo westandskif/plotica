@@ -1,13 +1,13 @@
-# Graphima
+# Plotica
 
-**Graphima** (_Greek: γράφημα_) is an attempt to build full-featured
-WebAssembly-based monolith charts.
+**Plotica** is an attempt to build full-featured WebAssembly-based monolith
+charts.
 
 See ["Can I Use" WebAssembly](https://caniuse.com/wasm) for browser support.
 
-## Docs & Examples - [graphima.readthedocs.io](https://graphima.readthedocs.io/en/latest/)
+## Docs & Examples - [plotica.readthedocs.io](https://plotica.readthedocs.io/en/latest/)
 
-[graphima on npmjs.com](https://www.npmjs.com/package/graphima)
+[plotica on npmjs.com](https://www.npmjs.com/package/plotica)
 
 ## Main chart features
 
@@ -29,11 +29,7 @@ Should you want to submit a pull request, please start the discussion/issue
 first, just to make sure it aligns with the vision.
 
 
-## Sponsor this project
+## Support this project
 
-Should you use it for commercial purposes or you just enjoy the tool, please,
-consider supporting:
-
-1. westandskif (Nikita Almakov) via
-   [Patreon](https://www.patreon.com/westandskif) or
-   [Boosty](https://boosty.to/westandskif)
+Should you want to support this project, please, give it a star and spread the
+word about it.

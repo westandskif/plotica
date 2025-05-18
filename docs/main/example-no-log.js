@@ -1,4 +1,8 @@
+import init, { createMain } from "../dist/index.js";
+
+// --8<-- [start:main]
 async function run() {
+  await init();
   const response = await fetch("../../overview.json");
   const data = await response.json();
 
@@ -27,6 +31,7 @@ async function run() {
   };
   let config = Object.create(CONFIG);
   config.autoLogScaleThreshold = 1500;
-  Graphima.createMain(params, config);
+  createMain(params, config);
 }
 run();
+// --8<-- [end:main]

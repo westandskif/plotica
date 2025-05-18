@@ -7,13 +7,13 @@ const chartConfig = {
   // defines chart configuration, see next sections
 };
 // promise which resolves
-let chartPromise = Graphima.createMain(params, chartConfig);
+let chartPromise = Plotica.createMain(params, chartConfig);
 
 // destroy chart
 chartPromise.then(function () {
-  Graphima.destroyMain(chartId); // promise
+  destroyMain(chartId); // promise
 });
 
 // OPTIONAL: if you want to run all the initialization code before createMain
 // to minimize latency of the first call
-Graphima.init(); // promise
+init(); // promise

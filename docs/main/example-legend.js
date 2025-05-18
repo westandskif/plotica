@@ -1,4 +1,8 @@
+import init, { createMain } from "../dist/index.js";
+
+// --8<-- [start:main]
 async function run() {
+  await init();
   const response = await fetch("../../overview.json");
   const data = await response.json();
 
@@ -60,6 +64,7 @@ async function run() {
       },
     ],
   };
-  Graphima.createMain(params, CONFIG);
+  createMain(params, CONFIG);
 }
 run();
+// --8<-- [end:main]

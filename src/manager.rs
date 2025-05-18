@@ -27,9 +27,9 @@ pub struct ChartManager {
 }
 impl ChartManager {
     // https://rustwasm.github.io/docs/wasm-bindgen/reference/attributes/on-rust-exports/constructor.html
-    pub fn new() -> Pin<Box<Self>> {
+    pub fn new() -> Self {
         let touch_device = Self::is_touch_device();
-        Box::pin(Self {
+        Self {
             global_window_resize: None,
             global_orintation_change: None,
             charts: Rc::new(RefCell::new(Vec::new())),
@@ -37,7 +37,7 @@ impl ChartManager {
             touch_device,
             client_caps: Rc::new(RefCell::new(ClientCaps::detect())),
             _pin: PhantomPinned,
-        })
+        }
     }
     pub fn create_main(
         mut self: Pin<&mut Self>,
@@ -214,7 +214,8 @@ pub fn get_or_create_manager_addr() -> u32 {
         match CHART_MANAGER {
             Some(addr) => addr,
             None => {
-                let addr = Box::into_raw(Pin::into_inner_unchecked(ChartManager::new())) as u32;
+                // let addr = Box::into_raw(Pin::into_inner_unchecked(ChartManager::new())) as u32;
+                let addr = Box::into_raw(Box::new(ChartManager::new())) as u32;
                 CHART_MANAGER = Some(addr);
                 addr
             }

@@ -28,6 +28,9 @@ use std::pin::Pin;
 
 use wasm_bindgen::prelude::*;
 
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
 fn get_pinned_manager() -> Pin<Box<ChartManager>> {
     Box::into_pin(unsafe { Box::from_raw(get_or_create_manager_addr() as *mut ChartManager) })
 }
