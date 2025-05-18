@@ -1,0 +1,21 @@
+{
+  "name": "plotica",
+  "type": "module",
+  "description": "wasm-based chart drawing library",
+  "version": "0.1.1",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/westandskif/plotica"
+  },
+  "files": [
+    "index_bg.wasm",
+    "index.js",
+    "index.d.ts"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -4,6 +4,7 @@ build:
 	find pkg -delete || true
 	wasm-pack build --target web --out-name index
 	rsync -avh pkg/ docs/dist/ --delete
+	rm pkg/.gitignore
 
 build_all:
 	BUILD_ALL=1 $(MAKE) build
